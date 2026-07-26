@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Threading.Tasks;
 using System.Windows;
 using SnapDoc.Services;
 using Forms = System.Windows.Forms;
@@ -15,6 +16,7 @@ public sealed class TrayIcon : IDisposable
     private Forms.NotifyIcon? _icon;
     private MainWindow? _main;
     private bool _showingMain;
+    private Forms.ToolStripMenuItem? _restartToUpdateItem;
 
     public void Initialize()
     {
@@ -26,12 +28,21 @@ public sealed class TrayIcon : IDisposable
         };
 
         var menu = new Forms.ContextMenuStrip();
+
+        // Hidden until an update has actually finished downloading -- see UpdateService.UpdateReady.
+        _restartToUpdateItem = new Forms.ToolStripMenuItem("Restart to update", null,
+            (_, _) => UpdateService.ApplyUpdateAndRestart()) { Visible = false, Font = new Font(Forms.Control.DefaultFont, System.Drawing.FontStyle.Bold) };
+        menu.Items.Add(_restartToUpdateItem);
+        menu.Items.Add(new Forms.ToolStripSeparator() { Visible = false, Tag = "update-separator" });
+
         menu.Items.Add("Capture region\tCtrl+Shift+1", null, (_, _) => CaptureController.StartRegionCapture());
         menu.Items.Add("Capture monitor\tCtrl+Shift+2", null, (_, _) => CaptureController.CaptureCurrentMonitor());
         menu.Items.Add("Capture window\tCtrl+Shift+3", null, (_, _) => CaptureController.StartWindowCapture());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Open workspace…", null, (_, _) => ShowMain());
         menu.Items.Add("Settings…", null, (_, _) => ShowMain());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Check for updates…", null, async (_, _) => await CheckForUpdatesManually());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Application.Current.Shutdown());
         _icon.ContextMenuStrip = menu;
@@ -46,6 +57,42 @@ public sealed class TrayIcon : IDisposable
 
         _icon.ShowBalloonTip(2000, "SnapDoc is running",
             "Press Ctrl+Shift+1 to capture a region.", Forms.ToolTipIcon.Info);
+
+        // Only acts if it's actually the "update ready" balloon being clicked -- the plain
+        // "SnapDoc is running" balloon above shares the same event and shouldn't restart anything.
+        _icon.BalloonTipClicked += (_, _) => { if (UpdateService.IsUpdateReady) UpdateService.ApplyUpdateAndRestart(); };
+
+        UpdateService.UpdateReady += OnUpdateReady;
+    }
+
+    // Runs once on startup (from App.OnStartup) and again any time the user picks "Check for
+    // updates…" from the tray menu -- the only difference is a manual check tells you when
+    // you're already up to date; the silent startup one doesn't bother you with that.
+    public static async Task CheckForUpdatesOnStartup() => await UpdateService.CheckForUpdatesAsync();
+
+    private async Task CheckForUpdatesManually()
+    {
+        string? version = await UpdateService.CheckForUpdatesAsync();
+        if (version == null)
+            _icon?.ShowBalloonTip(2000, "SnapDoc", "You're already on the latest version.", Forms.ToolTipIcon.Info);
+    }
+
+    // UpdateService.CheckForUpdatesAsync() is awaited without ConfigureAwait(false) anywhere in
+    // its chain, so this continuation resumes on the same UI thread that created it (WPF's
+    // Dispatcher acts as the SynchronizationContext) -- safe to touch the WinForms tray controls
+    // directly here, no manual Invoke/marshaling needed.
+    private void OnUpdateReady(string version)
+    {
+        if (_restartToUpdateItem == null || _icon?.ContextMenuStrip == null) return;
+        _restartToUpdateItem.Text = $"Restart to update (v{version})";
+        _restartToUpdateItem.Visible = true;
+        foreach (Forms.ToolStripItem item in _icon.ContextMenuStrip.Items)
+            if (item is Forms.ToolStripSeparator && (string?)item.Tag == "update-separator")
+                item.Visible = true;
+
+        _icon.ShowBalloonTip(4000, "SnapDoc update ready",
+            $"Version {version} has been downloaded. Click here or use the tray menu to restart and update.",
+            Forms.ToolTipIcon.Info);
     }
 
     // Reads the same Assets/icon.ico embedded as a WPF pack resource (see SnapDoc.csproj's
@@ -88,6 +135,7 @@ public sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
+        UpdateService.UpdateReady -= OnUpdateReady;
         if (_icon != null) { _icon.Visible = false; _icon.Dispose(); _icon = null; }
     }
 }

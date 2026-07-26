@@ -13,12 +13,24 @@
     <Version>0.1.0</Version>
     <LangVersion>latest</LangVersion>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <!-- WPF's SDK normally auto-generates Main() from App.xaml's ApplicationDefinition item and
+         wires it as the entry point. Velopack needs to run before any of that (see Program.cs),
+         so App.xaml is downgraded to a plain Page below and Program.Main takes over instead. -->
+    <StartupObject>SnapDoc.Program</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Also a WPF pack resource (not just the exe's own icon) so Window.Icon (title bar/Alt+Tab)
          and TrayIcon.cs (loaded via pack URI) can both reference the same file. -->
     <Resource Include="Assets\icon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
   </ItemGroup>
 
   <ItemGroup>
@@ -40,6 +52,9 @@
 
     <!-- Export: PDF -->
     <PackageReference Include="QuestPDF" Version="2024.3.0" />
+
+    <!-- Self-update: checks GitHub Releases and applies new versions in place -->
+    <PackageReference Include="Velopack" Version="1.2.0" />
 
     <!-- OCR fallback (Windows.Media.Ocr is used first; Tesseract optional).
          Left commented so the project builds with zero external native deps.

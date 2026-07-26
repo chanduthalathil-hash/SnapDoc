@@ -65,6 +65,11 @@ public partial class App : Application
         _tray.Initialize();
 
         RegisterHotkeys();
+
+        // Fire-and-forget: an update check should never delay startup or be able to crash it.
+        // Silent when already up to date -- the "Check for updates…" tray item gives feedback
+        // either way when the user asks explicitly.
+        _ = TrayIcon.CheckForUpdatesOnStartup();
     }
 
     private void RegisterHotkeys()

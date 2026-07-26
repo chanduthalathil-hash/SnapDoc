@@ -7,8 +7,10 @@ obj/
 # Build/packaging outputs -- these are produced from source, never hand-edited, and the
 # self-contained publish output alone is 50+ MB, which doesn't belong in git history.
 publish/
+publish-velopack/
 installer/output/
 release/
+releases/
 Releases/
 
 # Portable GitHub CLI binary downloaded locally (no installer available without admin rights)
