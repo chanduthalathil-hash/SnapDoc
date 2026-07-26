@@ -1,0 +1,443 @@
+<Window x:Class="SnapDoc.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SnapDoc — Workspace" Height="760" Width="1360"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/icon.ico"
+        Background="{StaticResource WindowBg}">
+    <Window.Resources>
+        <!-- Grid (card) layout for the gallery -->
+        <ItemsPanelTemplate x:Key="GridPanel">
+            <WrapPanel/>
+        </ItemsPanelTemplate>
+        <DataTemplate x:Key="CardTemplate">
+            <StackPanel Width="220">
+                <Grid>
+                    <Image Source="{Binding Image}" Height="130" Stretch="Uniform"/>
+                    <Border Background="{StaticResource BlueAccent}" CornerRadius="9"
+                            Width="22" Height="22" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4">
+                        <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                                          Path=(ItemsControl.AlternationIndex),
+                                          Converter={StaticResource IndexPlusOneConverter}}"
+                                   FontSize="11" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </Grid>
+                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,6,0,0"
+                           Foreground="{StaticResource TextPrimary}"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="{Binding CreatedAt, StringFormat=g}" FontSize="10"
+                           Foreground="{StaticResource TextSecondary}"/>
+                <ItemsControl ItemsSource="{Binding Tags}" Margin="0,4,0,0">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#3A3A3D" CornerRadius="8" Padding="6,1" Margin="0,0,4,4">
+                                <TextBlock Text="{Binding}" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- List (row) layout for the gallery -->
+        <ItemsPanelTemplate x:Key="ListPanel">
+            <StackPanel/>
+        </ItemsPanelTemplate>
+        <DataTemplate x:Key="RowTemplate">
+            <Grid Margin="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="{StaticResource BlueAccent}" CornerRadius="9"
+                        Width="20" Height="20" VerticalAlignment="Center" Margin="0,0,10,0">
+                    <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                                      Path=(ItemsControl.AlternationIndex),
+                                      Converter={StaticResource IndexPlusOneConverter}}"
+                               FontSize="10" FontWeight="Bold" Foreground="White"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <Image Grid.Column="1" Source="{Binding Image}" Height="44" Width="70" Stretch="Uniform"/>
+                <StackPanel Grid.Column="2" Margin="10,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}"/>
+                    <TextBlock Text="{Binding CaptureKind}" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="{Binding CreatedAt, StringFormat=g}" FontSize="11"
+                           Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Top bar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBg}" Padding="14,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="SnapDoc" Foreground="{StaticResource TextPrimary}" FontSize="16"
+                           FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                <TextBlock Text="Doc title:" Foreground="{StaticResource TextSecondary}"
+                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox x:Name="DocTitleBox" Width="220" Text="How-To Guide" VerticalAlignment="Center"
+                         Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                         BorderThickness="0" Padding="6,4"/>
+                <TextBlock x:Name="AutoSavedText" Text="" Foreground="{StaticResource TextSecondary}"
+                           FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                <CheckBox x:Name="StepGuideCheck" Content="Step guide" IsChecked="True"
+                          Foreground="{StaticResource TextSecondary}"
+                          VerticalAlignment="Center" Margin="16,0"/>
+                <Button Content="?" Width="26" Height="26" Click="Help_Click"
+                        Style="{StaticResource FlatDarkButtonStyle}" Padding="0" Margin="4,0"
+                        ToolTip="Keyboard shortcuts"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Status strip -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBg}" Padding="14,4">
+            <StackPanel Orientation="Horizontal">
+                <Ellipse Width="8" Height="8" Fill="#4CAF50" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBlock x:Name="StatusText" Text="Ready. Press Ctrl+Shift+1 to capture."
+                           Foreground="{StaticResource TextSecondary}" FontSize="11"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Bottom action bar -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBg}" Padding="0,14">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+
+                <Grid Margin="8,0">
+                    <Button x:Name="CaptureRegionBtn" Style="{StaticResource TileButtonStyle}"
+                            Background="#302D7DD2" BorderBrush="{StaticResource BlueAccent}"
+                            Click="CaptureRegion_Click" ToolTip="Capture a region">
+                        <StackPanel HorizontalAlignment="Center">
+                            <Viewbox Width="22" Height="22" HorizontalAlignment="Center">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="2" Canvas.Top="6" Width="20" Height="14" RadiusX="2" RadiusY="2"
+                                               Stroke="{StaticResource BlueAccent}" StrokeThickness="1.6"/>
+                                    <Rectangle Canvas.Left="8" Canvas.Top="3" Width="6" Height="3" Fill="{StaticResource BlueAccent}"/>
+                                    <Ellipse Canvas.Left="8" Canvas.Top="9" Width="8" Height="8"
+                                             Stroke="{StaticResource BlueAccent}" StrokeThickness="1.6"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Screenshot" Foreground="{StaticResource TextPrimary}" FontSize="12"
+                                       HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="Ctrl+Shift+1" Foreground="{StaticResource TextSecondary}" FontSize="10"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="CaptureMoreBtn" Width="16" Height="16" Padding="0"
+                            HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,4,4,0"
+                            Background="#3A3A3D" Foreground="{StaticResource TextPrimary}" FontSize="9"
+                            BorderThickness="0" Content="&#9662;" Click="CaptureMore_Click"
+                            ToolTip="More capture options"/>
+                </Grid>
+
+                <Button Style="{StaticResource TileButtonStyle}" Margin="8,0"
+                        Background="#30E5484D" BorderBrush="{StaticResource RedAccent}"
+                        Click="RecordVideo_Click" ToolTip="Record video">
+                    <StackPanel HorizontalAlignment="Center">
+                        <Viewbox Width="22" Height="22" HorizontalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Rectangle Canvas.Left="2" Canvas.Top="7" Width="13" Height="10" RadiusX="2" RadiusY="2"
+                                           Stroke="{StaticResource RedAccent}" StrokeThickness="1.6"/>
+                                <Polygon Points="16,10 22,6 22,18 16,14" Fill="{StaticResource RedAccent}"/>
+                            </Canvas>
+                        </Viewbox>
+                        <TextBlock Text="Record Video" Foreground="{StaticResource TextPrimary}" FontSize="12"
+                                   HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBlock Text="Ctrl+Shift+R" Foreground="{StaticResource TextSecondary}" FontSize="10"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Style="{StaticResource TileButtonStyle}" Margin="8,0"
+                        Background="#302E7D32" BorderBrush="{StaticResource GreenAccent}"
+                        Click="Edit_Click" ToolTip="Edit the selected capture">
+                    <StackPanel HorizontalAlignment="Center">
+                        <Viewbox Width="22" Height="22" HorizontalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Polygon Points="3,21 3,17 15,5 19,9 7,21" Fill="{StaticResource GreenAccent}"/>
+                            </Canvas>
+                        </Viewbox>
+                        <TextBlock Text="Edit" Foreground="{StaticResource TextPrimary}" FontSize="12"
+                                   HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBlock Text="Ctrl+E" Foreground="{StaticResource TextSecondary}" FontSize="10"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Style="{StaticResource TileButtonStyle}" Margin="8,0"
+                        Background="#30E5484D" BorderBrush="{StaticResource RedAccent}"
+                        Click="DeleteSelectedBtn_Click" ToolTip="Delete the selected capture(s)">
+                    <StackPanel HorizontalAlignment="Center">
+                        <Viewbox Width="22" Height="22" HorizontalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Rectangle Canvas.Left="5" Canvas.Top="7" Width="14" Height="14" RadiusX="1.5" RadiusY="1.5"
+                                           Stroke="{StaticResource RedAccent}" StrokeThickness="1.6"/>
+                                <Rectangle Canvas.Left="3" Canvas.Top="4" Width="18" Height="2.4" Fill="{StaticResource RedAccent}"/>
+                                <Rectangle Canvas.Left="9" Canvas.Top="1" Width="6" Height="2.4" Fill="{StaticResource RedAccent}"/>
+                            </Canvas>
+                        </Viewbox>
+                        <TextBlock Text="Delete" Foreground="{StaticResource TextPrimary}" FontSize="12"
+                                   HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBlock Text="Del" Foreground="{StaticResource TextSecondary}" FontSize="10"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Style="{StaticResource TileButtonStyle}" Margin="8,0"
+                        Background="#303A3A3D" BorderBrush="{StaticResource OrangeAccent}"
+                        Click="CloseWindow_Click" ToolTip="Close (SnapDoc keeps running in the tray)">
+                    <StackPanel HorizontalAlignment="Center">
+                        <Viewbox Width="22" Height="22" HorizontalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Line X1="5" Y1="5" X2="19" Y2="19" Stroke="{StaticResource OrangeAccent}"
+                                      StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                <Line X1="19" Y1="5" X2="5" Y2="19" Stroke="{StaticResource OrangeAccent}"
+                                      StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Canvas>
+                        </Viewbox>
+                        <TextBlock Text="Close" Foreground="{StaticResource TextPrimary}" FontSize="12"
+                                   HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBlock Text="Esc" Foreground="{StaticResource TextSecondary}" FontSize="10"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- Body: sidebar | gallery | details -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="300"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar -->
+            <Border Grid.Column="0" Background="{StaticResource PanelBg}" Padding="12">
+                <StackPanel>
+                    <Button Click="CaptureRegion_Click" Padding="10,8" Margin="0,0,0,16"
+                            Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"
+                            HorizontalContentAlignment="Left" Cursor="Hand">
+                        <TextBlock Text="+ New Capture" FontWeight="SemiBold"/>
+                    </Button>
+
+                    <Border x:Name="NavHome" Background="#3A3A3D" CornerRadius="4" Padding="10,7" Margin="0,0,0,4"
+                            Cursor="Hand" MouseLeftButtonDown="NavHome_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#8962;" FontFamily="Segoe UI Symbol" Foreground="{StaticResource BlueAccent}" Margin="0,0,8,0"/>
+                            <TextBlock Text="Home" Foreground="{StaticResource TextPrimary}" FontWeight="SemiBold"/>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="NavScreenshots" CornerRadius="4" Padding="10,7" Margin="0,0,0,4"
+                            Cursor="Hand" MouseLeftButtonDown="NavScreenshots_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#128444;" Margin="0,0,8,0" Foreground="{StaticResource TextSecondary}"/>
+                            <TextBlock Text="Screenshots" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="NavRecordings" CornerRadius="4" Padding="10,7" Margin="0,0,0,4"
+                            Cursor="Hand" MouseLeftButtonDown="NavRecordings_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#9658;" FontFamily="Segoe UI Symbol" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0"/>
+                            <TextBlock Text="Recordings" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Padding="10,7" Margin="0,0,0,4" ToolTip="Coming soon" Opacity="0.5">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#9636;" FontFamily="Segoe UI Symbol" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0"/>
+                            <TextBlock Text="Templates" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- Main content: GalleryPage (Home/Screenshots) and RecordingsPage occupy the same
+                 cell and are toggled by the sidebar nav, see the Nav*_Click handlers below. -->
+            <Grid Grid.Column="1">
+            <Grid x:Name="GalleryPage">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Margin="16,14,16,10">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="HeadingText" Text="How-To Guide" FontSize="20" FontWeight="Bold"
+                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"/>
+                        <Border Background="#302D7DD2" CornerRadius="10" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="CountBadgeText" Text="0 captures" FontSize="11" Foreground="{StaticResource BlueAccent}"/>
+                        </Border>
+                    </StackPanel>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid Grid.Column="0" HorizontalAlignment="Left" MaxWidth="360">
+                            <TextBox x:Name="SearchBox" Height="30" Padding="8,5" Width="360"
+                                     Background="#3A3A3D" Foreground="{StaticResource TextPrimary}" BorderThickness="0"
+                                     TextChanged="SearchBox_TextChanged"/>
+                            <TextBlock x:Name="SearchPlaceholder" Text="Search captures..." Padding="9,6"
+                                       Foreground="{StaticResource TextSecondary}" IsHitTestVisible="False"/>
+                        </Grid>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Button x:Name="SelectAllBtn" Content="Select all" Padding="10,5" Margin="4,0"
+                                    Background="Transparent" Foreground="{StaticResource TextSecondary}"
+                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                    Click="SelectAllBtn_Click"/>
+                            <Button x:Name="DeleteSelectedBtn" Content="Delete" Padding="10,5" Margin="4,0"
+                                    Background="#30E5484D" Foreground="{StaticResource RedAccent}"
+                                    BorderBrush="{StaticResource RedAccent}" BorderThickness="1"
+                                    IsEnabled="False" Click="DeleteSelectedBtn_Click"
+                                    ToolTip="Delete the selected capture(s) (Del)"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="GridViewBtn" Grid.Column="2" Content="Grid" Padding="10,5" Margin="4,0"
+                                      IsChecked="True" Click="GridViewBtn_Click"/>
+                        <ToggleButton x:Name="ListViewBtn" Grid.Column="3" Content="List" Padding="10,5" Margin="4,0"
+                                      Click="ListViewBtn_Click"/>
+                        <ComboBox x:Name="SortCombo" Grid.Column="4" Width="120" Margin="8,0,0,0"
+                                  SelectionChanged="SortCombo_SelectionChanged" SelectedIndex="0">
+                            <ComboBoxItem Content="Newest first"/>
+                            <ComboBoxItem Content="Oldest first"/>
+                        </ComboBox>
+                    </Grid>
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                              Background="{StaticResource WindowBg}">
+                    <ListBox x:Name="CaptureList" Margin="12" Background="Transparent" BorderThickness="0"
+                             HorizontalContentAlignment="Stretch"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             SelectionMode="Extended" AlternationCount="9999"
+                             ItemsPanel="{StaticResource GridPanel}"
+                             ItemTemplate="{StaticResource CardTemplate}"
+                             SelectionChanged="CaptureList_SelectionChanged"
+                             MouseDoubleClick="CaptureList_DoubleClick"
+                             PreviewMouseLeftButtonDown="CaptureList_PreviewMouseLeftButtonDown"
+                             PreviewMouseMove="CaptureList_PreviewMouseMove"
+                             PreviewKeyDown="CaptureList_PreviewKeyDown">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Card" Margin="6" Padding="8" CornerRadius="4"
+                                                    Background="{StaticResource CardBg}"
+                                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BlueAccent}"/>
+                                                    <Setter TargetName="Card" Property="BorderThickness" Value="2"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </ScrollViewer>
+            </Grid>
+
+            <StackPanel x:Name="RecordingsPage" Visibility="Collapsed"
+                        VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="&#127916;" FontSize="48" HorizontalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+                <TextBlock Text="No recordings yet" FontSize="18" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimary}" HorizontalAlignment="Center" Margin="0,12,0,6"/>
+                <TextBlock Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" TextAlignment="Center"
+                           MaxWidth="360" HorizontalAlignment="Center">
+                    Screen recording is planned for a future version. The Record Video button and
+                    Ctrl+Shift+R are wired up, but nothing is captured yet.
+                </TextBlock>
+            </StackPanel>
+            </Grid>
+
+            <!-- Details panel -->
+            <Border Grid.Column="2" Background="{StaticResource PanelBg}" Padding="16">
+                <StackPanel x:Name="DetailsEmptyState">
+                    <TextBlock Text="Details" FontWeight="SemiBold" FontSize="14"
+                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="DetailsPlaceholder" Text="Select a capture to see its details."
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"/>
+
+                    <StackPanel x:Name="DetailsContent" Visibility="Collapsed">
+                        <TextBlock Text="Title" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,4,0,4"/>
+                        <TextBox x:Name="DetailTitleBox" Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                                 BorderThickness="0" Padding="6,4" TextChanged="DetailTitleBox_TextChanged"/>
+
+                        <TextBlock Text="Description" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBox x:Name="DetailDescriptionBox" Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                                 BorderThickness="0" Padding="6,4" Height="60" TextWrapping="Wrap" AcceptsReturn="True"
+                                 TextChanged="DetailDescriptionBox_TextChanged"/>
+
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="SavedText" Grid.Column="0" Text="" FontSize="11"
+                                       Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                            <Button Grid.Column="1" Content="Save" Click="SaveDetails_Click" Padding="16,6"
+                                    Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                        </Grid>
+
+                        <TextBlock Text="Position" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="DetailPositionText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Tags" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <ItemsControl x:Name="DetailTagsList">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#3A3A3D" CornerRadius="8" Padding="7,2" Margin="0,0,4,4">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding}" FontSize="11" Foreground="{StaticResource TextPrimary}"/>
+                                            <TextBlock Text=" &#10005;" FontSize="9" Foreground="{StaticResource TextSecondary}"
+                                                       Cursor="Hand" VerticalAlignment="Center" Margin="4,0,0,0"
+                                                       MouseLeftButtonDown="RemoveTag_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Grid Margin="0,4,0,0">
+                            <TextBox x:Name="TagInputBox" Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                                     BorderThickness="0" Padding="6,4"
+                                     KeyDown="TagInputBox_KeyDown" TextChanged="TagInputBox_TextChanged"/>
+                            <TextBlock x:Name="TagPlaceholder" Text="Add a tag, press Enter" Padding="7,5"
+                                       Foreground="{StaticResource TextSecondary}" IsHitTestVisible="False"/>
+                        </Grid>
+
+                        <TextBlock Text="Created" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="DetailCreatedText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Size" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="DetailSizeText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Dimensions" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="DetailDimensionsText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Capture Type" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="DetailCaptureTypeText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <Button Content="Edit Capture" Click="Edit_Click" Margin="0,18,0,0" Padding="0,8"
+                                Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

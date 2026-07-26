@@ -1,0 +1,24 @@
+<Window x:Class="SnapDoc.Views.CaptureOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="#01000000" Topmost="True" ShowInTaskbar="False"
+        Cursor="Cross">
+    <!-- Background is very-nearly-transparent black (#01...) so the window still receives
+         mouse input across the whole screen. A fully transparent window ignores clicks. -->
+    <Canvas x:Name="RootCanvas">
+        <!-- dimming rectangles drawn around the selection are added in code-behind -->
+        <Rectangle x:Name="SelectionRect"
+                   Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
+                   Fill="#22FFFFFF" Visibility="Collapsed"/>
+        <Border x:Name="SizeLabel" Background="#CC000000" CornerRadius="3" Padding="6,2"
+                Visibility="Collapsed">
+            <TextBlock x:Name="SizeText" Foreground="White" FontSize="12" FontFamily="Segoe UI"/>
+        </Border>
+        <TextBlock x:Name="HintText" Foreground="White" FontSize="16" FontFamily="Segoe UI"
+                   Text="Drag to select a region  ·  Esc to cancel"
+                   Canvas.Left="20" Canvas.Top="20">
+            <TextBlock.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1"/></TextBlock.Effect>
+        </TextBlock>
+    </Canvas>
+</Window>

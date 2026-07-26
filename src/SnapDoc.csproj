@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms> <!-- needed for global hotkeys, tray icon, screen enumeration -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>SnapDoc</AssemblyName>
+    <RootNamespace>SnapDoc</RootNamespace>
+    <Version>0.1.0</Version>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Also a WPF pack resource (not just the exe's own icon) so Window.Icon (title bar/Alt+Tab)
+         and TrayIcon.cs (loaded via pack URI) can both reference the same file. -->
+    <Resource Include="Assets\icon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The WindowsDesktop SDK auto-adds global usings for System.Drawing and System.Windows.Forms
+         when UseWindowsForms is true. Those collide with WPF's System.Windows / System.Windows.Media
+         (Point, Color, Pen, Brush, Application, MessageBox, ...) across most of this WPF-first app.
+         Removed here; the handful of files that genuinely need WinForms/GDI types (TrayIcon,
+         WindowsOcrEngine) import them explicitly instead. -->
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MVVM plumbing -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+
+    <!-- Export: Word + PowerPoint (OpenXML) -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.0.1" />
+
+    <!-- Export: PDF -->
+    <PackageReference Include="QuestPDF" Version="2024.3.0" />
+
+    <!-- OCR fallback (Windows.Media.Ocr is used first; Tesseract optional).
+         Left commented so the project builds with zero external native deps.
+         Uncomment when you wire the Tesseract backend in src/Ocr/TesseractOcrEngine.cs
+    <PackageReference Include="Tesseract" Version="5.2.0" />
+    -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Access to Windows Runtime APIs (Windows.Media.Ocr, Windows.Graphics.Capture) from a .NET app -->
+    <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.0.4" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Enables Microsoft.VisualBasic.Interaction.InputBox, used for the quick text-annotation prompt.
+         Replace with a proper WPF dialog when you polish the editor. -->
+    <IncludeVisualBasicRuntime>true</IncludeVisualBasicRuntime>
+  </PropertyGroup>
+
+</Project>

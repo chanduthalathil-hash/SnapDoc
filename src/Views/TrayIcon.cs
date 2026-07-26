@@ -1,0 +1,93 @@
+using System;
+using System.Drawing;
+using System.Windows;
+using SnapDoc.Services;
+using Forms = System.Windows.Forms;
+
+namespace SnapDoc.Views;
+
+/// <summary>
+/// The always-present system-tray presence. Owns the app lifetime: the process runs headless in
+/// the tray and only shows windows on demand. Uses WinForms NotifyIcon (WPF has no native tray API).
+/// </summary>
+public sealed class TrayIcon : IDisposable
+{
+    private Forms.NotifyIcon? _icon;
+    private MainWindow? _main;
+    private bool _showingMain;
+
+    public void Initialize()
+    {
+        _icon = new Forms.NotifyIcon
+        {
+            Text = "SnapDoc — screen capture & docs",
+            Visible = true,
+            Icon = LoadAppIcon(),
+        };
+
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Capture region\tCtrl+Shift+1", null, (_, _) => CaptureController.StartRegionCapture());
+        menu.Items.Add("Capture monitor\tCtrl+Shift+2", null, (_, _) => CaptureController.CaptureCurrentMonitor());
+        menu.Items.Add("Capture window\tCtrl+Shift+3", null, (_, _) => CaptureController.StartWindowCapture());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Open workspace…", null, (_, _) => ShowMain());
+        menu.Items.Add("Settings…", null, (_, _) => ShowMain());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) => Application.Current.Shutdown());
+        _icon.ContextMenuStrip = menu;
+
+        _icon.DoubleClick += (_, _) => ShowMain();
+        // Left-click also opens the workspace: icons parked in the taskbar's hidden-icons
+        // overflow flyout don't reliably deliver DoubleClick, only single clicks.
+        _icon.MouseClick += (_, args) =>
+        {
+            if (args.Button == Forms.MouseButtons.Left) ShowMain();
+        };
+
+        _icon.ShowBalloonTip(2000, "SnapDoc is running",
+            "Press Ctrl+Shift+1 to capture a region.", Forms.ToolTipIcon.Info);
+    }
+
+    // Reads the same Assets/icon.ico embedded as a WPF pack resource (see SnapDoc.csproj's
+    // ApplicationIcon/Resource entries) rather than shipping a second copy of the icon file, so
+    // the exe icon, window title bars, and the tray icon all stay in sync from one source.
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            var info = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/icon.ico"));
+            if (info != null) return new Icon(info.Stream);
+        }
+        catch { /* fall back to a generic icon rather than fail startup over branding */ }
+        return SystemIcons.Application;
+    }
+
+    // A single physical double-click on the tray icon delivers TWO separate WM_LBUTTONUP
+    // messages (one per press-release), each raising MouseClick, plus a DoubleClick on top --
+    // so ShowMain() can be entered twice in quick succession from one double-click alone, with
+    // no DoubleClick handler even involved. Window.Show() pumps the Win32 message queue while it
+    // builds the window's HwndSource, so that second, near-simultaneous call could run
+    // re-entrantly on the SAME _main instance *while the first Show() call was still mid-flight*
+    // -- calling Show() again on a Window before its previous Show() has finished setting its
+    // root Visual is exactly what throws "The root Visual of a VisualTarget cannot have a
+    // parent." The guard below is safe with a plain bool (no lock) because the re-entrant call
+    // and the original call both run on the same UI thread.
+    private void ShowMain()
+    {
+        if (_showingMain) return;
+        _showingMain = true;
+        try
+        {
+            _main ??= new MainWindow();
+            _main.Show();
+            _main.WindowState = WindowState.Normal;
+            _main.Activate();
+        }
+        finally { _showingMain = false; }
+    }
+
+    public void Dispose()
+    {
+        if (_icon != null) { _icon.Visible = false; _icon.Dispose(); _icon = null; }
+    }
+}

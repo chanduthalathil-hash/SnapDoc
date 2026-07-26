@@ -1,0 +1,507 @@
+<Window x:Class="SnapDoc.Views.EditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:SnapDoc.Converters"
+        Title="SnapDoc Editor" Height="760" Width="1200"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/icon.ico"
+        Background="{StaticResource WindowBg}"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <!-- Selection-highlight chrome for LayersList rows, copied from MainWindow.xaml's
+             CaptureList.ItemContainerStyle so both selection lists look/behave consistently. -->
+        <Style x:Key="LayerItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Row" Padding="4,2" CornerRadius="3" Background="Transparent">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Row" Property="Background" Value="#302D7DD2"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <DockPanel>
+        <!-- Top toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBg}" Padding="10,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="&#8592; Back to Library" Click="BackToLibrary_Click" Style="{StaticResource FlatDarkButtonStyle}"/>
+                    <Rectangle Width="1" Fill="{StaticResource CardBorder}" Margin="8,4"/>
+                    <Button Content="&#8630; Undo" Click="Undo_Click" Style="{StaticResource FlatDarkButtonStyle}"/>
+                    <Button Content="&#8631; Redo" Click="Redo_Click" Style="{StaticResource FlatDarkButtonStyle}"/>
+                    <Rectangle Width="1" Fill="{StaticResource CardBorder}" Margin="8,4"/>
+                    <Button Content="&#8722;" Click="ZoomOut_Click" Style="{StaticResource FlatDarkButtonStyle}" Padding="12,7"/>
+                    <TextBlock x:Name="ZoomPercentText" Text="100%" Foreground="{StaticResource TextPrimary}"
+                               Width="50" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <Button Content="&#43;" Click="ZoomIn_Click" Style="{StaticResource FlatDarkButtonStyle}" Padding="12,7"/>
+                    <Button Content="Fit" Click="ZoomFit_Click" Style="{StaticResource FlatDarkButtonStyle}"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="Copy" Click="Copy_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                            ToolTip="Copy the flattened image to the clipboard"/>
+                    <Button Content="Save" Click="Save_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                            ToolTip="Overwrite the saved PNG"/>
+                    <Button Content="Save As…" Click="SaveAs_Click" Padding="14,7" Margin="4,0"
+                            Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                    <Button Content="Export…" Click="Export_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                            ToolTip="Export as a documentation file (Markdown/PDF/Word/PPTX)"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Info bar -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBg}" Padding="10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Title:" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBox x:Name="TitleBox" Width="200" VerticalAlignment="Center"
+                             Background="#3A3A3D" Foreground="{StaticResource TextPrimary}" BorderThickness="0" Padding="6,4"/>
+                    <TextBlock Text="Caption:" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                    <TextBox x:Name="CaptionBox" Width="240" VerticalAlignment="Center"
+                             Background="#3A3A3D" Foreground="{StaticResource TextPrimary}" BorderThickness="0" Padding="6,4"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Created:" Foreground="{StaticResource TextSecondary}" Margin="0,0,4,0"/>
+                    <TextBlock x:Name="CreatedText" Foreground="{StaticResource TextPrimary}" Margin="0,0,16,0"/>
+                    <TextBlock Text="Size:" Foreground="{StaticResource TextSecondary}" Margin="0,0,4,0"/>
+                    <TextBlock x:Name="ImageSizeText" Foreground="{StaticResource TextPrimary}" Margin="0,0,16,0"/>
+                    <TextBlock Text="File size:" Foreground="{StaticResource TextSecondary}" Margin="0,0,4,0"/>
+                    <TextBlock x:Name="FileSizeText" Foreground="{StaticResource TextPrimary}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Colour / stroke bar -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBg}" Padding="10,6">
+            <StackPanel Orientation="Horizontal">
+                <Border x:Name="CurrentColorSwatch" Width="22" Height="22" CornerRadius="11" Background="Red"
+                        BorderBrush="White" BorderThickness="2" Margin="0,0,10,0" ToolTip="Current colour"/>
+                <Ellipse Width="20" Height="20" Fill="Red"     Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_Red"/>
+                <Ellipse Width="20" Height="20" Fill="#2D7DD2" Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_Blue"/>
+                <Ellipse Width="20" Height="20" Fill="#2E7D32" Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_Green"/>
+                <Ellipse Width="20" Height="20" Fill="#F9A825" Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_Yellow"/>
+                <Ellipse Width="20" Height="20" Fill="Black" Stroke="{StaticResource CardBorder}" StrokeThickness="1"
+                         Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_Black"/>
+                <Ellipse Width="20" Height="20" Fill="White" Stroke="{StaticResource CardBorder}" StrokeThickness="1"
+                         Margin="4,0" Cursor="Hand" MouseLeftButtonDown="Color_White"/>
+
+                <Rectangle Width="1" Fill="{StaticResource CardBorder}" Margin="10,4"/>
+
+                <TextBlock x:Name="StrokeLabelText" Text="Stroke:" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <ComboBox x:Name="StrokeWidthCombo" Width="70" SelectionChanged="StrokeWidthCombo_SelectionChanged">
+                    <ComboBoxItem Content="1"/>
+                    <ComboBoxItem Content="2"/>
+                    <ComboBoxItem Content="3"/>
+                    <ComboBoxItem Content="4"/>
+                    <ComboBoxItem Content="6"/>
+                    <ComboBoxItem Content="8" IsSelected="True"/>
+                    <ComboBoxItem Content="12"/>
+                    <ComboBoxItem Content="16"/>
+                    <ComboBoxItem Content="24"/>
+                    <ComboBoxItem Content="32"/>
+                </ComboBox>
+                <Slider x:Name="StrokeWidthSlider" Width="90" Minimum="1" Maximum="32" Value="8"
+                        VerticalAlignment="Center" Margin="8,0,0,0"
+                        ValueChanged="StrokeWidthSlider_ValueChanged" ToolTip="Fine stroke width control"/>
+
+                <Rectangle Width="1" Fill="{StaticResource CardBorder}" Margin="10,4"/>
+                <Button x:Name="DeleteBtn" Content="Delete" Click="Delete_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                        IsEnabled="False" ToolTip="Delete the selected annotation (Del)"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Left tool rail -->
+        <Border DockPanel.Dock="Left" Background="{StaticResource PanelBg}" Padding="6,10" Width="150">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <ToggleButton x:Name="ToolSelectBtn" Style="{StaticResource RailToolButtonStyle}"
+                                  Click="Tool_Select" IsChecked="True">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Polygon Points="4,2 4,20 8.5,15.5 11,21 13,20 10.5,14.5 16,14" Fill="White"/>
+                            </Viewbox>
+                            <TextBlock Text="Select" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolArrowBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Arrow">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Line X1="4" Y1="20" X2="18" Y2="6" Stroke="White" StrokeThickness="2.2" StrokeStartLineCap="Round"/>
+                                    <Polygon Points="18,13 18,6 11,6" Fill="White"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Arrow" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolRectBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Rectangle">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Rectangle Width="20" Height="14" Stroke="White" StrokeThickness="2"/>
+                            </Viewbox>
+                            <TextBlock Text="Rectangle" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolEllipseBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Ellipse">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Ellipse Width="20" Height="14" Stroke="White" StrokeThickness="2"/>
+                            </Viewbox>
+                            <TextBlock Text="Ellipse" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolLineBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Line">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Line X1="3" Y1="21" X2="21" Y2="3" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Viewbox>
+                            <TextBlock Text="Line" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolHighlightBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Highlight">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="18" Height="18" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="3" Canvas.Top="9" Width="18" Height="7" Fill="#F9A825" Opacity="0.7"/>
+                                    <Line X1="3" Y1="18" X2="21" Y2="18" Stroke="White" StrokeThickness="1.5"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Highlight" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolTextBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Text">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="A" FontWeight="Bold" FontSize="14" Foreground="White" Width="16" Margin="0,0,8,0"/>
+                            <TextBlock Text="Text" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolStepBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Step">
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="16" Margin="0,0,8,0">
+                                <Ellipse Width="16" Height="16" Fill="White"/>
+                                <TextBlock Text="1" FontWeight="Bold" FontSize="10" Foreground="{StaticResource PanelBg}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Grid>
+                            <TextBlock Text="Step" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+
+                    <Rectangle Height="1" Fill="{StaticResource CardBorder}" Margin="4,8"/>
+
+                    <ToggleButton x:Name="ToolBlurBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Blur">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Ellipse Canvas.Left="2" Canvas.Top="6" Width="10" Height="10" Fill="White" Opacity="0.6"/>
+                                    <Ellipse Canvas.Left="9" Canvas.Top="9" Width="10" Height="10" Fill="White" Opacity="0.6"/>
+                                    <Ellipse Canvas.Left="6" Canvas.Top="2" Width="10" Height="10" Fill="White" Opacity="0.6"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Blur" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="ToolCropBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Crop">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Polyline Points="6,2 6,6 2,6" Stroke="White" StrokeThickness="2"/>
+                                    <Polyline Points="18,2 18,6 22,6" Stroke="White" StrokeThickness="2"/>
+                                    <Polyline Points="6,22 6,18 2,18" Stroke="White" StrokeThickness="2"/>
+                                    <Polyline Points="18,22 18,18 22,18" Stroke="White" StrokeThickness="2"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Crop" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button Style="{StaticResource RailStubButtonStyle}" Tag="Pixelate" Click="ComingSoon_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="2" Canvas.Top="2" Width="9" Height="9" Fill="White" Opacity="0.8"/>
+                                    <Rectangle Canvas.Left="13" Canvas.Top="2" Width="9" Height="9" Fill="White" Opacity="0.4"/>
+                                    <Rectangle Canvas.Left="2" Canvas.Top="13" Width="9" Height="9" Fill="White" Opacity="0.4"/>
+                                    <Rectangle Canvas.Left="13" Canvas.Top="13" Width="9" Height="9" Fill="White" Opacity="0.8"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Pixelate" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource RailStubButtonStyle}" Tag="Eraser" Click="ComingSoon_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Rectangle Width="18" Height="10" Fill="White" Opacity="0.8" RadiusX="2" RadiusY="2"
+                                           RenderTransformOrigin="0.5,0.5">
+                                    <Rectangle.RenderTransform><RotateTransform Angle="-30"/></Rectangle.RenderTransform>
+                                </Rectangle>
+                            </Viewbox>
+                            <TextBlock Text="Eraser" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Button>
+                    <ToggleButton x:Name="ToolCalloutBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_Callout">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="2" Canvas.Top="2" Width="20" Height="13" RadiusX="3" RadiusY="3"
+                                               Stroke="White" StrokeThickness="1.6"/>
+                                    <Polygon Points="6,15 6,20 11,15" Fill="White"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Callout" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button Style="{StaticResource RailStubButtonStyle}" Tag="Magnifier" Click="ComingSoon_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Ellipse Canvas.Left="2" Canvas.Top="2" Width="13" Height="13" Stroke="White" StrokeThickness="2"/>
+                                    <Line X1="13" Y1="13" X2="21" Y2="21" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Magnifier" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource RailStubButtonStyle}" Tag="Ruler" Click="ComingSoon_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="2" Canvas.Top="8" Width="20" Height="8" Stroke="White" StrokeThickness="1.6"/>
+                                    <Line X1="7"  Y1="8" X2="7"  Y2="12" Stroke="White" StrokeThickness="1.4"/>
+                                    <Line X1="12" Y1="8" X2="12" Y2="14" Stroke="White" StrokeThickness="1.4"/>
+                                    <Line X1="17" Y1="8" X2="17" Y2="12" Stroke="White" StrokeThickness="1.4"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Ruler" Foreground="{StaticResource TextSecondary}"/>
+                        </StackPanel>
+                    </Button>
+                    <ToggleButton x:Name="ToolColorPickerBtn" Style="{StaticResource RailToolButtonStyle}" Click="Tool_ColorPicker">
+                        <StackPanel Orientation="Horizontal">
+                            <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                <Canvas Width="24" Height="24">
+                                    <Rectangle Canvas.Left="9" Canvas.Top="2" Width="6" Height="14" Fill="White"
+                                               RenderTransformOrigin="0.5,0.5">
+                                        <Rectangle.RenderTransform><RotateTransform Angle="45"/></Rectangle.RenderTransform>
+                                    </Rectangle>
+                                    <Ellipse Canvas.Left="3" Canvas.Top="17" Width="6" Height="6" Fill="White"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Text="Color Picker" Foreground="White"/>
+                        </StackPanel>
+                    </ToggleButton>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- Right panel: Canvas / Annotations tabs (or Text properties, when a text object is selected) -->
+        <DockPanel DockPanel.Dock="Right" Width="280" Background="{StaticResource PanelBg}">
+            <StackPanel x:Name="TabButtonsPanel" DockPanel.Dock="Top" Orientation="Horizontal" Margin="12,10,12,0">
+                <Button x:Name="TabCanvasBtn" Content="Canvas" Click="TabCanvas_Click"
+                        Style="{StaticResource FlatDarkButtonStyle}" Padding="14,6"/>
+                <Button x:Name="TabAnnotationsBtn" Content="Annotations" Click="TabAnnotations_Click"
+                        Style="{StaticResource FlatDarkButtonStyle}" Padding="14,6" Margin="6,0,0,0"/>
+            </StackPanel>
+            <TextBlock x:Name="TextPropertiesHeader" DockPanel.Dock="Top" Text="TEXT" Visibility="Collapsed"
+                       Foreground="{StaticResource TextSecondary}" FontSize="11" FontWeight="Bold"
+                       Margin="12,14,12,0"/>
+
+            <Button DockPanel.Dock="Bottom" Content="Done" Click="Done_Click" Margin="12" Padding="0,10"
+                    Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Grid Margin="12">
+                    <StackPanel x:Name="CanvasTab">
+                        <TextBlock Text="Size" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,8,0,4"/>
+                        <TextBlock x:Name="CanvasSizeText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Quick Actions" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,16,0,6"/>
+                        <UniformGrid Columns="2" Rows="2">
+                            <Button Content="Crop" Click="Tool_Crop" Margin="2" Padding="0,8" Style="{StaticResource FlatDarkButtonStyle}"/>
+                            <Button Content="Extract Text (OCR)" Click="Ocr_Click" Margin="2" Padding="0,8" Style="{StaticResource FlatDarkButtonStyle}"/>
+                            <Button Content="Auto Enhance" Tag="Auto Enhance" Click="ComingSoon_Click" Margin="2" Padding="0,8" Style="{StaticResource FlatDarkButtonStyle}"/>
+                            <Button Content="Blur Sensitive Data" Tag="Blur Sensitive Data" Click="ComingSoon_Click" Margin="2" Padding="0,8" Style="{StaticResource FlatDarkButtonStyle}"/>
+                        </UniformGrid>
+                    </StackPanel>
+
+                    <StackPanel x:Name="AnnotationsTab" Visibility="Collapsed">
+                        <TextBlock Text="Layers" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,8,0,6"/>
+                        <ListBox x:Name="LayersList" Background="Transparent" BorderThickness="0"
+                                 ItemContainerStyle="{StaticResource LayerItemStyle}"
+                                 SelectionChanged="LayersList_SelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Converter={StaticResource AnnotationTypeGlyphConverter}}"
+                                                   FontWeight="Bold" Width="16" TextAlignment="Center" Margin="0,0,6,0"
+                                                   Foreground="{StaticResource TextSecondary}"/>
+                                        <Ellipse Grid.Column="1" Width="10" Height="10" Margin="0,0,8,0"
+                                                 Fill="{Binding Color, Converter={StaticResource ColorToBrushConverter}}"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding DisplayName}" Foreground="{StaticResource TextPrimary}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        <ToggleButton Grid.Column="3" IsChecked="{Binding IsLocked}" Click="LayerVisibility_Click"
+                                                      Width="22" Height="20" Background="Transparent" BorderThickness="0"
+                                                      Foreground="{StaticResource TextSecondary}" Content="&#128274;"
+                                                      ToolTip="Lock (prevents move/resize/rotate on canvas)"/>
+                                        <ToggleButton Grid.Column="4" IsChecked="{Binding IsVisible}" Click="LayerVisibility_Click"
+                                                      Width="26" Height="20" Background="Transparent" BorderThickness="0"
+                                                      Foreground="{StaticResource TextSecondary}" Content="&#128065;"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Rectangle Height="1" Fill="{StaticResource CardBorder}" Margin="0,10"/>
+                        <Grid Margin="0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="&#128444;" Margin="0,0,8,0" Foreground="{StaticResource TextSecondary}"/>
+                            <TextBlock Grid.Column="1" Text="Screenshot" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="&#128274;" Foreground="{StaticResource TextSecondary}" ToolTip="The base image can't be hidden"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Replaces CanvasTab/AnnotationsTab (and TabButtonsPanel) whenever a Text
+                         object is selected: see EditorWindow.xaml.cs's ShowPropertiesFor. -->
+                    <StackPanel x:Name="TextPropertiesTab" Visibility="Collapsed">
+                        <TextBlock Text="Content" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,8,0,4"/>
+                        <TextBox x:Name="PropContentBox" AcceptsReturn="True" Height="60" TextWrapping="Wrap"
+                                 Background="#3A3A3D" Foreground="{StaticResource TextPrimary}" BorderThickness="0" Padding="6,4"
+                                 TextChanged="PropContentBox_TextChanged" LostKeyboardFocus="PropContentBox_LostKeyboardFocus"/>
+
+                        <TextBlock Text="Font" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <ComboBox x:Name="PropFontCombo" SelectionChanged="PropFontCombo_SelectionChanged"/>
+
+                        <TextBlock Text="Font Size" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <ComboBox x:Name="PropFontSizeCombo" IsEditable="True" SelectionChanged="PropFontSizeCombo_SelectionChanged"
+                                  LostFocus="PropFontSizeCombo_LostFocus">
+                            <ComboBoxItem Content="8"/><ComboBoxItem Content="10"/><ComboBoxItem Content="12"/>
+                            <ComboBoxItem Content="14"/><ComboBoxItem Content="16"/><ComboBoxItem Content="18"/>
+                            <ComboBoxItem Content="20"/><ComboBoxItem Content="24"/><ComboBoxItem Content="28"/>
+                            <ComboBoxItem Content="32"/><ComboBoxItem Content="36"/><ComboBoxItem Content="48"/>
+                            <ComboBoxItem Content="64"/><ComboBoxItem Content="96"/>
+                        </ComboBox>
+
+                        <UniformGrid Columns="3" Margin="0,12,0,0">
+                            <ToggleButton x:Name="PropBoldBtn" Content="B" FontWeight="Bold" Click="PropBold_Click" Margin="2"/>
+                            <ToggleButton x:Name="PropItalicBtn" Content="I" FontStyle="Italic" Click="PropItalic_Click" Margin="2"/>
+                            <ToggleButton x:Name="PropUnderlineBtn" Click="PropUnderline_Click" Margin="2">
+                                <TextBlock Text="U" TextDecorations="Underline"/>
+                            </ToggleButton>
+                        </UniformGrid>
+
+                        <TextBlock Text="Alignment" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <UniformGrid Columns="3">
+                            <ToggleButton x:Name="PropAlignLeftBtn" Content="Left" Click="PropAlignLeft_Click" Margin="2"/>
+                            <ToggleButton x:Name="PropAlignCenterBtn" Content="Center" Click="PropAlignCenter_Click" Margin="2"/>
+                            <ToggleButton x:Name="PropAlignRightBtn" Content="Right" Click="PropAlignRight_Click" Margin="2"/>
+                        </UniformGrid>
+
+                        <TextBlock Text="Color" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="18" Height="18" Fill="Red"     Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_Red"/>
+                            <Ellipse Width="18" Height="18" Fill="#2D7DD2" Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_Blue"/>
+                            <Ellipse Width="18" Height="18" Fill="#2E7D32" Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_Green"/>
+                            <Ellipse Width="18" Height="18" Fill="#F9A825" Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_Yellow"/>
+                            <Ellipse Width="18" Height="18" Fill="Black" Stroke="{StaticResource CardBorder}" StrokeThickness="1"
+                                     Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_Black"/>
+                            <Ellipse Width="18" Height="18" Fill="White" Stroke="{StaticResource CardBorder}" StrokeThickness="1"
+                                     Margin="2" Cursor="Hand" MouseLeftButtonDown="Color_White"/>
+                        </StackPanel>
+
+                        <TextBlock Text="Opacity" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <!-- Before/after for the undo entry is captured on any mouse-down on the slider
+                             (thumb drag OR a plain track click both start here) and pushed on mouse-up,
+                             so one push covers the whole gesture instead of one per ValueChanged tick. -->
+                        <Slider x:Name="PropOpacitySlider" Minimum="0" Maximum="100"
+                                PreviewMouseLeftButtonDown="PropOpacitySlider_PreviewMouseDown"
+                                PreviewMouseLeftButtonUp="PropOpacitySlider_PreviewMouseUp"
+                                ValueChanged="PropOpacitySlider_ValueChanged"/>
+
+                        <TextBlock Text="Rotation" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="PropRotationSlider" Minimum="-180" Maximum="180"
+                                    PreviewMouseLeftButtonDown="PropRotationSlider_PreviewMouseDown"
+                                    PreviewMouseLeftButtonUp="PropRotationSlider_PreviewMouseUp"
+                                    ValueChanged="PropRotationSlider_ValueChanged"/>
+                            <TextBlock x:Name="PropRotationText" Grid.Column="1" Text="0°" Width="36" TextAlignment="Right"
+                                       Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <UniformGrid Columns="2" Margin="0,14,0,0">
+                            <ToggleButton x:Name="PropShadowBtn" Content="Shadow" Click="PropShadow_Click" Margin="2" Padding="0,6"/>
+                            <ToggleButton x:Name="PropOutlineBtn" Content="Outline" Click="PropOutline_Click" Margin="2" Padding="0,6"/>
+                            <ToggleButton x:Name="PropLockBtn" Content="Lock" Click="PropLock_Click" Margin="2" Padding="0,6"/>
+                            <ToggleButton x:Name="PropVisibleBtn" Content="Visible" Click="PropVisible_Click" Margin="2" Padding="0,6"/>
+                        </UniformGrid>
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+        </DockPanel>
+
+        <!-- Canvas -->
+        <ScrollViewer x:Name="CanvasScroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                      Background="#2B2B2B">
+            <Border Padding="24">
+                <!-- InkCanvas-free custom canvas: we host an Image + an overlay Canvas that we
+                     draw annotations onto. Hit-testing and drawing live in code-behind.
+                     LayoutTransform (not RenderTransform) scales the whole thing for on-screen
+                     zoom while annotation math still works in real image-pixel coordinates,
+                     since WPF resolves mouse positions back through the transform automatically. -->
+                <Grid x:Name="CanvasHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Grid.LayoutTransform>
+                        <ScaleTransform x:Name="CanvasZoom" ScaleX="1" ScaleY="1"/>
+                    </Grid.LayoutTransform>
+                    <Image x:Name="BaseImage" Stretch="None"/>
+                    <Canvas x:Name="AnnotationLayer" Background="Transparent"
+                            MouseLeftButtonDown="Layer_MouseDown"
+                            MouseMove="Layer_MouseMove"
+                            MouseLeftButtonUp="Layer_MouseUp"
+                            MouseRightButtonDown="Layer_MouseRightButtonDown"/>
+                    <!-- Selection outline + resize/endpoint handles. Purely visual: all mouse
+                         input still goes through AnnotationLayer above, so there's only ever one
+                         input pipeline (no risk of two Canvases racing over mouse capture). -->
+                    <Canvas x:Name="SelectionLayer" Background="Transparent" IsHitTestVisible="False"/>
+                    <!-- In-place text editing. CanvasHost is a Grid (not a Canvas), so this is
+                         positioned via Margin + Left/Top alignment rather than Canvas.Left/Top:
+                         see EditorWindow.xaml.cs's BeginTextEdit. Sits inside CanvasHost's own
+                         LayoutTransform, so it scales (including its rendered font) with zoom for
+                         free, same as everything else here. -->
+                    <TextBox x:Name="InlineTextEditor" Visibility="Collapsed" AcceptsReturn="True" AcceptsTab="False"
+                             HorizontalAlignment="Left" VerticalAlignment="Top"
+                             Background="#CC1E1E1E" Foreground="White" CaretBrush="White"
+                             BorderBrush="{StaticResource BlueAccent}" BorderThickness="1" Padding="2"
+                             LostKeyboardFocus="InlineTextEditor_LostKeyboardFocus"
+                             PreviewKeyDown="InlineTextEditor_PreviewKeyDown"/>
+                </Grid>
+            </Border>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

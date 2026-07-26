@@ -1,0 +1,18 @@
+bin/
+obj/
+*.user
+.vs/
+*.suo
+
+# Build/packaging outputs -- these are produced from source, never hand-edited, and the
+# self-contained publish output alone is 50+ MB, which doesn't belong in git history.
+publish/
+installer/output/
+release/
+Releases/
+
+# Portable GitHub CLI binary downloaded locally (no installer available without admin rights)
+# -- a build tool, not project source.
+tools/
+
+.claude/
