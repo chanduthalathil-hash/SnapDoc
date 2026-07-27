@@ -8,6 +8,14 @@ A friendly Windows screen-capture and documentation tool (a Screenpresso-style a
 > OCR uses the built-in Windows engine. Screen recording, scrolling capture, Tesseract OCR, and
 > plugins are **stubbed with clear TODOs** so you can fill them in one at a time.
 
+## Download
+
+**[⬇ Download SnapDoc for Windows](https://github.com/chanduthalathil-hash/SnapDoc/releases/latest/download/SnapDoc-win-Setup.exe)**
+
+Run the installer, then check the system tray (near the clock) — SnapDoc has no window on launch
+by design. The installed app checks for and applies new versions automatically; see
+[Releasing an update](#releasing-an-update) below for how to ship one.
+
 ---
 
 ## Build & run
@@ -109,6 +117,31 @@ Each step is independent and leaves a shippable app.
 - **PPTX exporter** builds a minimal valid deck; complex layouts may need layout tweaks.
 - Mixed-DPI multi-monitor capture is correct per-window but approximate right at monitor seams.
 - No app icon yet (uses the system default) — drop an `.ico` in and set it on the tray + windows.
+
+---
+
+## Releasing an update
+
+SnapDoc auto-updates itself via [Velopack](https://velopack.io), checking this repo's GitHub
+Releases. Every installed copy picks up a new version automatically (or via the tray's "Check for
+updates…" item) once you publish one:
+
+```powershell
+# 1. Bump <Version> in src/SnapDoc.csproj, then from src/:
+dotnet publish SnapDoc.csproj -c Release -r win-x64 --self-contained true -o publish-velopack
+
+# 2. Package the release (from src/):
+vpk pack --packId SnapDoc --packVersion <new version> --packDir publish-velopack `
+  --mainExe SnapDoc.exe --icon Assets/icon.ico -o ../releases
+
+# 3. Publish it to GitHub Releases (from the repo root):
+vpk upload github -o releases --repoUrl https://github.com/chanduthalathil-hash/SnapDoc `
+  --token <gh token> --publish true
+```
+
+`vpk` is installed via `dotnet tool install -g vpk`. A GitHub token with `repo` scope is required
+for step 3 — `gh auth token` will print the one already used to set this repo up, if the GitHub CLI
+is authenticated.
 
 ---
 
