@@ -38,13 +38,15 @@ public sealed class TrayIcon : IDisposable
         menu.Items.Add("Capture region\tCtrl+Shift+1", null, (_, _) => CaptureController.StartRegionCapture());
         menu.Items.Add("Capture monitor\tCtrl+Shift+2", null, (_, _) => CaptureController.CaptureCurrentMonitor());
         menu.Items.Add("Capture window\tCtrl+Shift+3", null, (_, _) => CaptureController.StartWindowCapture());
+        menu.Items.Add("Open recording toolbar", null, (_, _) => CaptureController.ShowRecordingToolbar());
+        menu.Items.Add("Start/stop recording\tCtrl+Shift+R", null, (_, _) => CaptureController.ToggleRecording());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Open workspace…", null, (_, _) => ShowMain());
         menu.Items.Add("Settings…", null, (_, _) => ShowMain());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Check for updates…", null, async (_, _) => await CheckForUpdatesManually());
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => Application.Current.Shutdown());
+        menu.Items.Add("Exit", null, (_, _) => App.RequestExit());
         _icon.ContextMenuStrip = menu;
 
         _icon.DoubleClick += (_, _) => ShowMain();
@@ -63,6 +65,20 @@ public sealed class TrayIcon : IDisposable
         _icon.BalloonTipClicked += (_, _) => { if (UpdateService.IsUpdateReady) UpdateService.ApplyUpdateAndRestart(); };
 
         UpdateService.UpdateReady += OnUpdateReady;
+    }
+
+    /// <summary>Balloon feedback for things that happen with no window open, like a recording
+    /// starting/stopping while the app lives only in the tray.</summary>
+    public void ShowBalloon(string title, string text) =>
+        _icon?.ShowBalloonTip(2500, title, text, Forms.ToolTipIcon.Info);
+
+    /// <summary>Swap the tray tooltip while a recording is in progress -- the only always-visible
+    /// indicator that SnapDoc is currently capturing video, since its windows are hidden for the
+    /// duration (see CaptureController.StartRecordingAsync).</summary>
+    public void SetRecordingIndicator(bool recording)
+    {
+        if (_icon != null)
+            _icon.Text = recording ? "SnapDoc — Recording… (Ctrl+Shift+R to stop)" : "SnapDoc — screen capture & docs";
     }
 
     // Runs once on startup (from App.OnStartup) and again any time the user picks "Check for

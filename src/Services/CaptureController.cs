@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using SnapDoc.Models;
+using SnapDoc.Recording;
 using SnapDoc.Views;
 
 namespace SnapDoc.Services;
@@ -60,6 +61,13 @@ public static class CaptureController
         _hiddenForCapture.Clear();
         foreach (Window w in Application.Current.Windows)
         {
+            // The recording toolbar, its countdown, and the live webcam preview are all deliberately
+            // excluded from capture via SetWindowDisplayAffinity (see CaptureExclusion) rather than
+            // hidden -- that's what lets them stay visible/usable on screen throughout a recording
+            // without ever appearing IN it. Hiding them here would make Stop unreachable mid-recording
+            // (toolbar) and would defeat the whole point of the webcam preview (WebcamLivePreview) --
+            // it's meant to keep showing exactly what's being composited into the file as it happens.
+            if (w is RecordingToolbar or RecordingCountdown or WebcamLivePreview) continue;
             if (w.IsVisible)
             {
                 _hiddenForCapture.Add(w);
@@ -203,23 +211,171 @@ public static class CaptureController
         overlay.Show();
     }
 
+    // ==================== Screen recording ====================
+    //
+    // The recording toolbar (Views/RecordingToolbar) is the primary UI for this -- source/mic/
+    // system-audio/webcam pickers, Start, and (once recording) timer/pause/mute/Stop. Everything
+    // below is orchestration the toolbar calls into, and which the global hotkeys (Ctrl+Shift+R
+    // start/stop, Ctrl+Shift+P pause/resume) call into too, so a hotkey-triggered change and a
+    // toolbar-click-triggered one both go through the exact same path and the toolbar (if open)
+    // stays in sync regardless of which one the user used.
+
+    private static RecordingToolbar? _toolbar;
+    private static string? _recordingPath;
+    private static DateTime _recordingStartedAt;
+
+    // What a bare Ctrl+Shift+R (no toolbar interaction first) starts with: whatever was last
+    // configured in the toolbar, or Full Screen/no audio the very first time.
+    private static Int32Rect? _lastRegion;
+    private static RecordingOptions _lastOptions = new();
+
+    private static RecordingToolbar EnsureToolbar()
+    {
+        if (_toolbar == null || !_toolbar.IsLoaded)
+            _toolbar = new RecordingToolbar();
+        return _toolbar;
+    }
+
+    /// <summary>Called from App.RequestExit -- force-closes the toolbar regardless of its normal
+    /// "don't disappear mid-recording" guard, since App.OnExit already stops any in-progress
+    /// recording before the process actually exits.</summary>
+    public static void CloseRecordingToolbarForShutdown()
+    {
+        try { _toolbar?.Close(); } catch { /* already closing/closed */ }
+        _toolbar = null;
+    }
+
+    /// <summary>Called from MainWindow.OnClosing. Closing the workspace window is how most users
+    /// expect to "close the app" -- even though SnapDoc actually just keeps running in the tray --
+    /// so a recording toolbar left idle in Setup state (nothing to Start yet, from some earlier
+    /// visit) shouldn't stay floating on screen behind what looks like a closed app. Left alone
+    /// while a recording is actually running, since Stop/Pause need to stay reachable.</summary>
+    public static void HideIdleRecordingToolbar()
+    {
+        if (App.Recorder.IsRecording) return;
+        _toolbar?.HideForIdle();
+    }
+
+    /// <summary>Opens the recorder's control bar (Setup state if idle, Recording state if a
+    /// recording -- started via hotkey, say -- is already running). Used by the tray menu, the
+    /// main window's Record button, etc.; does not itself start anything.</summary>
+    public static void ShowRecordingToolbar()
+    {
+        var toolbar = EnsureToolbar();
+        if (App.Recorder.IsRecording) toolbar.ShowRecordingState(_lastOptions);
+        else toolbar.ShowSetupState();
+        toolbar.Show();
+        toolbar.Activate();
+    }
+
+    /// <summary>Drives the toolbar's "Region" source button: hide the toolbar, reuse the same
+    /// drag-select overlay a screenshot uses, hand back physical-pixel bounds.</summary>
+    public static void PickRegionForRecording(Action<Int32Rect> onPicked, Action onCancelled)
+    {
+        var overlay = new CaptureOverlay();
+        overlay.RegionSelected += rect => onPicked(rect);
+        overlay.Closed += (_, _) => { if (!overlay.SelectionMade) onCancelled(); };
+        overlay.Show();
+    }
+
+    /// <summary>Drives the toolbar's "Window" source button.</summary>
+    public static void PickWindowForRecording(Action<Int32Rect> onPicked, Action onCancelled)
+    {
+        var overlay = new CaptureOverlay { WindowPickMode = true };
+        overlay.WindowPicked += hwnd => onPicked(App.CaptureEngine.GetWindowBounds(hwnd));
+        overlay.Closed += (_, _) => { if (!overlay.SelectionMade) onCancelled(); };
+        overlay.Show();
+    }
+
+    /// <summary>Ctrl+Shift+R: start with the last-configured source/options if idle, stop if not.</summary>
     public static void ToggleRecording()
     {
-        // v1: StubScreenRecorder throws a friendly NotImplemented with guidance.
+        if (App.Recorder.IsRecording) _ = StopRecordingAsync();
+        else _ = StartRecordingAsync(_lastRegion ?? App.CaptureEngine.GetCurrentMonitorBounds(), _lastOptions);
+    }
+
+    public static async void TogglePauseAsync()
+    {
+        if (!App.Recorder.IsRecording) return;
+        if (App.Recorder.IsPaused) await App.Recorder.ResumeAsync();
+        else await App.Recorder.PauseAsync();
+        _toolbar?.RefreshPauseState();
+    }
+
+    /// <summary>The actual start: a 3-second countdown over the chosen region, then hide SnapDoc's
+    /// own windows (same TryEnterCapture/HideAppWindows machinery a screenshot uses, so a
+    /// screenshot hotkey can't fire mid-recording and corrupt the shared hide/restore state) and
+    /// hand off to the recorder. Called by the toolbar's Start button and by the hotkey alike.</summary>
+    public static async Task StartRecordingAsync(Int32Rect region, RecordingOptions options)
+    {
+        if (!TryEnterCapture())
+        {
+            MessageBox.Show("Finish the current capture first.", "SnapDoc", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _lastRegion = region;
+        _lastOptions = options;
+
+        var toolbar = EnsureToolbar();
+        toolbar.Hide(); // out of the way during the countdown -- nothing to control yet
+
+        var countdownDone = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var countdown = new RecordingCountdown(region);
+        countdown.Finished += () => countdownDone.SetResult(null);
+        countdown.Start();
+        await countdownDone.Task;
+
+        HideAppWindows();
+        await Task.Run(() => { try { DwmFlush(); DwmFlush(); } catch { } });
+
         try
         {
-            if (App.Recorder.IsRecording)
-                _ = App.Recorder.StopAsync();
-            else
-                MessageBox.Show(
-                    "Screen recording is planned for a later version.\n\n" +
-                    "The button and hotkey are wired up -- the recorder just isn't built yet.",
-                    "SnapDoc", MessageBoxButton.OK, MessageBoxImage.Information);
+            string path = System.IO.Path.Combine(App.Settings.WorkspaceFolder,
+                $"SnapDoc Recording {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4");
+
+            _recordingStartedAt = DateTime.Now;
+            await App.Recorder.StartAsync(region, path, options);
+            _recordingPath = path;
+
+            App.Tray?.SetRecordingIndicator(true);
+            toolbar.ShowRecordingState(options);
+            toolbar.Show();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "SnapDoc — Recording", MessageBoxButton.OK, MessageBoxImage.Information);
+            RestoreAppWindows();
+            ExitCapture();
+            MessageBox.Show($"Couldn't start recording:\n{ex.Message}", "SnapDoc — Recording", MessageBoxButton.OK, MessageBoxImage.Error);
+            toolbar.ShowSetupState();
+            toolbar.Show();
         }
+    }
+
+    public static async Task StopRecordingAsync()
+    {
+        try
+        {
+            await App.Recorder.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Recording finished with an error:\n{ex.Message}", "SnapDoc — Recording", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            RestoreAppWindows();
+            ExitCapture();
+            App.Tray?.SetRecordingIndicator(false);
+        }
+
+        if (_recordingPath != null && System.IO.File.Exists(_recordingPath))
+        {
+            App.Workspace.AddRecording(_recordingPath, DateTime.Now - _recordingStartedAt);
+        }
+        _recordingPath = null;
+
+        _toolbar?.ResetAndHideAfterStop();
     }
 
     private static async void HandleNewCapture(BitmapSource bmp, string captureKind)

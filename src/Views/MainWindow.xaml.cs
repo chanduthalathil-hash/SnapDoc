@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
     private Point? _dragStart;
     private readonly CollectionViewSource _view = new();
     private Capture? _selected;
+    private RecordingClip? _selectedRecording;
     private bool _suppressDetailEvents;
 
     public MainWindow()
@@ -35,10 +37,18 @@ public partial class MainWindow : Window
         _view.SortDescriptions.Add(new SortDescription(nameof(Capture.CreatedAt), ListSortDirection.Descending));
         CaptureList.ItemsSource = _view.View;
 
-        DocTitleBox.TextChanged += (_, _) => HeadingText.Text = DocTitleBox.Text;
-
         App.Workspace.Captures.CollectionChanged += Captures_CollectionChanged;
         UpdateCountBadge();
+
+        RecordingList.ItemsSource = App.Workspace.Recordings;
+        App.Workspace.Recordings.CollectionChanged += (_, _) =>
+        {
+            UpdateRecordingsEmptyState();
+            if (HomePage.Visibility == Visibility.Visible) RefreshHomeDashboard();
+        };
+        UpdateRecordingsEmptyState();
+
+        RefreshHomeDashboard(); // Home is the default page shown on launch
     }
 
     private void FilterCaptures(object sender, FilterEventArgs e)
@@ -55,6 +65,7 @@ public partial class MainWindow : Window
         if (e.Action == NotifyCollectionChangedAction.Add)
             AutoSavedText.Text = $"Auto-saved {DateTime.Now:h:mm tt}";
         UpdateCountBadge();
+        if (HomePage.Visibility == Visibility.Visible) RefreshHomeDashboard();
     }
 
     private void UpdateCountBadge()
@@ -112,6 +123,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        RecordingDetailsContent.Visibility = Visibility.Collapsed;
         DetailsContent.Visibility = Visibility.Visible;
         DetailsPlaceholder.Visibility = Visibility.Collapsed;
 
@@ -131,10 +143,12 @@ public partial class MainWindow : Window
         SavedText.Text = "";
     }
 
-    private static string GetFileSizeText(Capture cap)
+    private static string GetFileSizeText(Capture cap) => GetFileSizeText(cap.FilePath);
+
+    private static string GetFileSizeText(string? filePath)
     {
-        if (string.IsNullOrEmpty(cap.FilePath) || !File.Exists(cap.FilePath)) return "Not saved yet";
-        double kb = new FileInfo(cap.FilePath).Length / 1024.0;
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return "Not saved yet";
+        double kb = new FileInfo(filePath).Length / 1024.0;
         return kb >= 1024 ? $"{kb / 1024:0.0} MB" : $"{kb:0} KB";
     }
 
@@ -186,21 +200,318 @@ public partial class MainWindow : Window
 
     // ---- sidebar navigation: switches which page fills the middle column ----
 
-    private void NavHome_Click(object sender, MouseButtonEventArgs e) => ShowGalleryPage(NavHome);
-    private void NavScreenshots_Click(object sender, MouseButtonEventArgs e) => ShowGalleryPage(NavScreenshots);
+    private void NavHome_Click(object sender, MouseButtonEventArgs e) => ShowHomePage();
+    private void NavScreenshots_Click(object sender, MouseButtonEventArgs e) => ShowGalleryPage();
+    private void NavRecordings_Click(object sender, MouseButtonEventArgs e) => ShowRecordingsPage();
 
-    private void NavRecordings_Click(object sender, MouseButtonEventArgs e)
+    private void ShowHomePage()
     {
+        GalleryPage.Visibility = Visibility.Collapsed;
+        RecordingsPage.Visibility = Visibility.Collapsed;
+        HomePage.Visibility = Visibility.Visible;
+        SetActiveNav(NavHome);
+        CaptureList.SelectedItem = null;
+        RecordingList.SelectedItem = null;
+        RefreshHomeDashboard();
+    }
+
+    private void UpdateRecordingsEmptyState()
+    {
+        bool has = App.Workspace.Recordings.Count > 0;
+        RecordingsEmptyState.Visibility = has ? Visibility.Collapsed : Visibility.Visible;
+        RecordingList.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        RecordingCountBadgeText.Text = App.Workspace.Recordings.Count == 1
+            ? "1 recording" : $"{App.Workspace.Recordings.Count} recordings";
+    }
+
+    private void RecordingList_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (RecordingList.SelectedItem is not RecordingClip rec || !File.Exists(rec.FilePath)) return;
+        try { Process.Start(new ProcessStartInfo(rec.FilePath) { UseShellExecute = true }); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Couldn't open recording", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void RecordingList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        int count = RecordingList.SelectedItems.Count;
+        RecordingDeleteSelectedBtn.IsEnabled = count > 0;
+        RecordingDeleteSelectedBtn.Content = count > 1 ? $"Delete ({count})" : "Delete";
+
+        _selectedRecording = RecordingList.SelectedItem as RecordingClip;
+        if (_selectedRecording == null)
+        {
+            RecordingDetailsContent.Visibility = Visibility.Collapsed;
+            DetailsContent.Visibility = Visibility.Collapsed;
+            DetailsPlaceholder.Visibility = Visibility.Visible;
+            return;
+        }
+
+        DetailsContent.Visibility = Visibility.Collapsed;
+        RecordingDetailsContent.Visibility = Visibility.Visible;
+        DetailsPlaceholder.Visibility = Visibility.Collapsed;
+
+        _suppressDetailEvents = true;
+        RecordingDetailTitleBox.Text = _selectedRecording.Title;
+        RecordingDetailDescriptionBox.Text = _selectedRecording.Caption;
+        _suppressDetailEvents = false;
+
+        RecordingDetailCreatedText.Text = _selectedRecording.CreatedAt.ToString("g");
+        RecordingDetailDurationText.Text = string.IsNullOrEmpty(_selectedRecording.DurationText) ? "—" : _selectedRecording.DurationText;
+        RecordingDetailSizeText.Text = GetFileSizeText(_selectedRecording.FilePath);
+        RecordingDetailPathText.Text = _selectedRecording.FilePath;
+        RecordingSavedText.Text = "";
+    }
+
+    // Title/Description write straight into the model as you type (so nothing is lost switching
+    // recordings without clicking Save), same as the capture details panel -- Save just makes the
+    // change visible in the gallery card and confirms it, see SaveRecordingDetails_Click.
+    private void RecordingDetailTitleBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressDetailEvents || _selectedRecording == null) return;
+        _selectedRecording.Title = RecordingDetailTitleBox.Text;
+        RecordingSavedText.Text = "";
+    }
+
+    private void RecordingDetailDescriptionBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressDetailEvents || _selectedRecording == null) return;
+        _selectedRecording.Caption = RecordingDetailDescriptionBox.Text;
+        RecordingSavedText.Text = "";
+    }
+
+    private void SaveRecordingDetails_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedRecording == null) return;
+        _selectedRecording.Title = RecordingDetailTitleBox.Text;
+        _selectedRecording.Caption = RecordingDetailDescriptionBox.Text;
+        RecordingList.Items.Refresh(); // RecordingClip isn't INotifyPropertyChanged -- this is what
+                                        // makes the gallery card's title actually update, same trick
+                                        // SaveDetails_Click uses for captures.
+        RecordingSavedText.Text = $"Saved {DateTime.Now:h:mm tt}";
+    }
+
+    private void PlayRecording_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedRecording == null || !File.Exists(_selectedRecording.FilePath)) return;
+        try { Process.Start(new ProcessStartInfo(_selectedRecording.FilePath) { UseShellExecute = true }); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Couldn't open recording", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void ShowRecordingInFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedRecording == null || !File.Exists(_selectedRecording.FilePath)) return;
+        try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{_selectedRecording.FilePath}\"")); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Couldn't open folder", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void RecordingSelectAllBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (RecordingList.SelectedItems.Count >= RecordingList.Items.Count && RecordingList.Items.Count > 0)
+            RecordingList.UnselectAll();
+        else
+            RecordingList.SelectAll();
+    }
+
+    private void RecordingDeleteSelectedBtn_Click(object sender, RoutedEventArgs e) => DeleteSelectedRecordings();
+
+    private void RecordingList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete)
+        {
+            DeleteSelectedRecordings();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            RecordingList.SelectAll();
+            e.Handled = true;
+        }
+    }
+
+    private void DeleteSelectedRecordings()
+    {
+        var chosen = RecordingList.SelectedItems.Cast<RecordingClip>().ToList();
+        if (chosen.Count == 0) return;
+
+        string message = chosen.Count == 1
+            ? $"Delete \"{chosen[0].Title}\"?\n\nThis also removes the saved video from disk."
+            : $"Delete {chosen.Count} recordings?\n\nThis also removes their saved videos from disk.";
+        if (MessageBox.Show(message, "Delete recordings", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        foreach (var rec in chosen)
+            App.Workspace.DeleteRecording(rec);
+    }
+
+    private void RecordingGridViewBtn_Click(object sender, RoutedEventArgs e)
+    {
+        RecordingGridViewBtn.IsChecked = true;
+        RecordingListViewBtn.IsChecked = false;
+        RecordingList.ItemsPanel = (ItemsPanelTemplate)FindResource("RecordingGridPanel");
+        RecordingList.ItemTemplate = (DataTemplate)FindResource("RecordingCardTemplate");
+    }
+
+    private void RecordingListViewBtn_Click(object sender, RoutedEventArgs e)
+    {
+        RecordingListViewBtn.IsChecked = true;
+        RecordingGridViewBtn.IsChecked = false;
+        RecordingList.ItemsPanel = (ItemsPanelTemplate)FindResource("RecordingListPanel");
+        RecordingList.ItemTemplate = (DataTemplate)FindResource("RecordingRowTemplate");
+    }
+
+    private void ShowGalleryPage()
+    {
+        HomePage.Visibility = Visibility.Collapsed;
+        RecordingsPage.Visibility = Visibility.Collapsed;
+        GalleryPage.Visibility = Visibility.Visible;
+        SetActiveNav(NavScreenshots);
+        RecordingList.SelectedItem = null; // otherwise its Details panel state lingers behind the now-hidden page
+    }
+
+    private void ShowRecordingsPage()
+    {
+        HomePage.Visibility = Visibility.Collapsed;
         GalleryPage.Visibility = Visibility.Collapsed;
         RecordingsPage.Visibility = Visibility.Visible;
         SetActiveNav(NavRecordings);
+        CaptureList.SelectedItem = null; // otherwise its Details panel state lingers behind the now-hidden page
     }
 
-    private void ShowGalleryPage(Border active)
+    // ---- Home dashboard ----
+
+    private void HomeCaptureFullScreen_Click(object sender, RoutedEventArgs e) => CaptureController.CaptureCurrentMonitor();
+    private void HomeCaptureWindow_Click(object sender, RoutedEventArgs e) => CaptureController.StartWindowCapture();
+
+    /// <summary>Recomputed on demand (nav click, or a capture/recording arriving while Home is
+    /// already showing) rather than kept continuously in sync -- this is a summary view, not a
+    /// live-bound list, so that's simpler and plenty responsive for how often it actually changes.</summary>
+    private void RefreshHomeDashboard()
     {
-        RecordingsPage.Visibility = Visibility.Collapsed;
-        GalleryPage.Visibility = Visibility.Visible;
-        SetActiveNav(active);
+        StatScreenshotsText.Text = App.Workspace.Captures.Count.ToString();
+        StatRecordingsText.Text = App.Workspace.Recordings.Count.ToString();
+
+        var weekAgo = DateTime.Now.AddDays(-7);
+        int thisWeek = App.Workspace.Captures.Count(c => c.CreatedAt >= weekAgo)
+                     + App.Workspace.Recordings.Count(r => r.CreatedAt >= weekAgo);
+        StatThisWeekText.Text = thisWeek.ToString();
+
+        long totalBytes = App.Workspace.Captures.Sum(c => SafeFileLength(c.FilePath))
+                         + App.Workspace.Recordings.Sum(r => SafeFileLength(r.FilePath));
+        StatStorageText.Text = FormatBytes(totalBytes);
+
+        var recent = App.Workspace.Captures.Cast<object>()
+            .Concat(App.Workspace.Recordings.Cast<object>())
+            .OrderByDescending(ActivityCreatedAt)
+            .Take(8)
+            .ToList();
+
+        RecentActivityEmptyText.Visibility = recent.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        RecentActivityList.Children.Clear();
+        foreach (var item in recent)
+            RecentActivityList.Children.Add(BuildRecentActivityRow(item));
+    }
+
+    private static DateTime ActivityCreatedAt(object item) => item switch
+    {
+        Capture c => c.CreatedAt,
+        RecordingClip r => r.CreatedAt,
+        _ => DateTime.MinValue,
+    };
+
+    private static long SafeFileLength(string? path)
+    {
+        try { return string.IsNullOrEmpty(path) ? 0 : new FileInfo(path).Length; }
+        catch { return 0; } // file locked/moved/gone -- don't let a stale entry break the total
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        double mb = bytes / 1024.0 / 1024.0;
+        return mb >= 1024 ? $"{mb / 1024:0.0} GB" : $"{mb:0} MB";
+    }
+
+    private Border BuildRecentActivityRow(object item)
+    {
+        bool isRecording = item is RecordingClip;
+        string title = item is Capture c ? c.Title : ((RecordingClip)item).Title;
+
+        var row = new Border
+        {
+            Background = (Brush)FindResource("CardBg"),
+            BorderBrush = (Brush)FindResource("CardBorder"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10),
+            Margin = new Thickness(0, 0, 0, 6),
+            Cursor = Cursors.Hand,
+        };
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var iconBorder = new Border
+        {
+            Width = 32,
+            Height = 32,
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3D)),
+            Margin = new Thickness(0, 0, 10, 0),
+            Child = new TextBlock
+            {
+                Text = isRecording ? "▶" : "🖼",
+                FontSize = 14,
+                Foreground = (Brush)FindResource("BlueAccent"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        Grid.SetColumn(iconBorder, 0);
+
+        var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textStack.Children.Add(new TextBlock
+        {
+            Text = title, FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)FindResource("TextPrimary"), TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        textStack.Children.Add(new TextBlock
+        {
+            Text = isRecording ? "Recording" : "Screenshot",
+            FontSize = 10, Foreground = (Brush)FindResource("TextSecondary"),
+        });
+        Grid.SetColumn(textStack, 1);
+
+        var timeText = new TextBlock
+        {
+            Text = ActivityCreatedAt(item).ToString("g"), FontSize = 11,
+            Foreground = (Brush)FindResource("TextSecondary"), VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(timeText, 2);
+
+        grid.Children.Add(iconBorder);
+        grid.Children.Add(textStack);
+        grid.Children.Add(timeText);
+        row.Child = grid;
+
+        row.MouseLeftButtonUp += (_, _) => JumpToActivityItem(item);
+        return row;
+    }
+
+    private void JumpToActivityItem(object item)
+    {
+        if (item is Capture cap)
+        {
+            ShowGalleryPage();
+            CaptureList.SelectedItem = cap;
+            CaptureList.ScrollIntoView(cap);
+        }
+        else if (item is RecordingClip rec)
+        {
+            ShowRecordingsPage();
+            RecordingList.SelectedItem = rec;
+            RecordingList.ScrollIntoView(rec);
+        }
     }
 
     private void SetActiveNav(Border active)
@@ -223,21 +534,27 @@ public partial class MainWindow : Window
             "Ctrl+Shift+1   Capture a region\n" +
             "Ctrl+Shift+2   Capture the current monitor\n" +
             "Ctrl+Shift+3   Capture a window\n" +
-            "Ctrl+Shift+R   Start/stop recording\n\n" +
+            "Ctrl+Shift+R   Start/stop recording\n" +
+            "Ctrl+Shift+P   Pause/resume recording\n\n" +
             "Double-click a capture to open it in the editor.\n" +
             "Drag a thumbnail onto another app to share the file.",
             "SnapDoc — Shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    // Closing the workspace just hides it -- the app keeps running in the tray.
+    // Closing the workspace just hides it -- the app keeps running in the tray. EXCEPT when the
+    // app itself is actually exiting (App.RequestExit sets IsExiting before calling Shutdown()) --
+    // cancelling then would silently abort that whole shutdown sequence (see IsExiting's doc
+    // comment), leaving the process alive with e.g. the recording toolbar stuck on screen.
     protected override void OnClosing(CancelEventArgs e)
     {
+        if (App.IsExiting) return;
         e.Cancel = true;
         Hide();
+        CaptureController.HideIdleRecordingToolbar();
     }
 
     private void CaptureRegion_Click(object s, RoutedEventArgs e)  => CaptureController.StartRegionCapture();
-    private void RecordVideo_Click(object s, RoutedEventArgs e)    => CaptureController.ToggleRecording();
+    private void RecordVideo_Click(object s, RoutedEventArgs e)    => CaptureController.ShowRecordingToolbar();
 
     // Small "more capture options" dropdown next to the Screenshot button.
     private void CaptureMore_Click(object sender, RoutedEventArgs e)

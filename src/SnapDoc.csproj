@@ -10,7 +10,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>SnapDoc</AssemblyName>
     <RootNamespace>SnapDoc</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <LangVersion>latest</LangVersion>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- WPF's SDK normally auto-generates Main() from App.xaml's ApplicationDefinition item and
@@ -55,6 +55,13 @@
 
     <!-- Self-update: checks GitHub Releases and applies new versions in place -->
     <PackageReference Include="Velopack" Version="1.2.0" />
+
+    <!-- Screen recording: H.264/MP4 encode via Media Foundation's SinkWriter (Windows' own
+         built-in encoder, so there's no ffmpeg.exe to bundle and no GPL licensing to think about). -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.2" />
+
+    <!-- Screen recording: mic + system-audio (WASAPI) capture for the recording toolbar. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
 
     <!-- OCR fallback (Windows.Media.Ocr is used first; Tesseract optional).
          Left commented so the project builds with zero external native deps.

@@ -8,10 +8,10 @@
     <Window.Resources>
         <!-- Grid (card) layout for the gallery -->
         <ItemsPanelTemplate x:Key="GridPanel">
-            <WrapPanel/>
+            <UniformGrid Columns="3"/>
         </ItemsPanelTemplate>
         <DataTemplate x:Key="CardTemplate">
-            <StackPanel Width="220">
+            <StackPanel>
                 <Grid>
                     <Image Source="{Binding Image}" Height="130" Stretch="Uniform"/>
                     <Border Background="{StaticResource BlueAccent}" CornerRadius="9"
@@ -70,6 +70,52 @@
                 </StackPanel>
                 <TextBlock Grid.Column="3" Text="{Binding CreatedAt, StringFormat=g}" FontSize="11"
                            Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+            </Grid>
+        </DataTemplate>
+
+        <!-- Grid (card) layout for recordings -->
+        <ItemsPanelTemplate x:Key="RecordingGridPanel">
+            <UniformGrid Columns="3"/>
+        </ItemsPanelTemplate>
+        <DataTemplate x:Key="RecordingCardTemplate">
+            <StackPanel>
+                <Border Background="#3A3A3D" CornerRadius="6" Height="110">
+                    <TextBlock Text="&#9654;" FontSize="30" Foreground="{StaticResource BlueAccent}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,6,0,0"
+                           Foreground="{StaticResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                    <TextBlock Text="{Binding CreatedAt, StringFormat=g}" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                    <TextBlock Text="{Binding DurationText}" FontSize="10" Foreground="{StaticResource TextSecondary}" Margin="8,0,0,0"/>
+                </StackPanel>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- List (row) layout for recordings -->
+        <ItemsPanelTemplate x:Key="RecordingListPanel">
+            <StackPanel/>
+        </ItemsPanelTemplate>
+        <DataTemplate x:Key="RecordingRowTemplate">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="#3A3A3D" CornerRadius="6"
+                        Width="40" Height="40" Margin="0,0,12,0">
+                    <TextBlock Text="&#9654;" FontSize="14" Foreground="{StaticResource BlueAccent}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding CreatedAt, StringFormat=g}" FontSize="11"
+                               Foreground="{StaticResource TextSecondary}"/>
+                </StackPanel>
+                <TextBlock Grid.Column="2" Text="{Binding DurationText}" FontSize="11"
+                           Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="8,0,0,0"/>
             </Grid>
         </DataTemplate>
     </Window.Resources>
@@ -257,17 +303,91 @@
                 </StackPanel>
             </Border>
 
-            <!-- Main content: GalleryPage (Home/Screenshots) and RecordingsPage occupy the same
-                 cell and are toggled by the sidebar nav, see the Nav*_Click handlers below. -->
+            <!-- Main content: HomePage, GalleryPage (Screenshots), and RecordingsPage occupy the
+                 same cell and are toggled by the sidebar nav, see the Nav*_Click handlers below. -->
             <Grid Grid.Column="1">
-            <Grid x:Name="GalleryPage">
+            <Grid x:Name="HomePage">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="16,14,16,10">
+                    <TextBlock Text="Home" FontSize="20" FontWeight="Bold" Foreground="{StaticResource TextPrimary}"/>
+                    <TextBlock Text="Your capture activity at a glance" FontSize="12"
+                               Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="16,0,16,16">
+
+                        <TextBlock Text="Quick Capture" FontWeight="SemiBold" FontSize="13"
+                                   Foreground="{StaticResource TextPrimary}" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,26">
+                            <Button Content="Region" Click="CaptureRegion_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                                    Padding="18,10" Margin="0,0,8,0" ToolTip="Ctrl+Shift+1"/>
+                            <Button Content="Full Screen" Click="HomeCaptureFullScreen_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                                    Padding="18,10" Margin="0,0,8,0" ToolTip="Ctrl+Shift+2"/>
+                            <Button Content="Window" Click="HomeCaptureWindow_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                                    Padding="18,10" Margin="0,0,8,0" ToolTip="Ctrl+Shift+3"/>
+                            <Button Content="Record Video" Click="RecordVideo_Click" Style="{StaticResource FlatDarkButtonStyle}"
+                                    Padding="18,10" ToolTip="Ctrl+Shift+R"/>
+                        </StackPanel>
+
+                        <TextBlock Text="Statistics" FontWeight="SemiBold" FontSize="13"
+                                   Foreground="{StaticResource TextPrimary}" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,26">
+                            <Border Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}"
+                                    BorderThickness="1" CornerRadius="6" Padding="16,12" Margin="0,0,10,0" Width="140">
+                                <StackPanel>
+                                    <TextBlock x:Name="StatScreenshotsText" Text="0" FontSize="24" FontWeight="Bold"
+                                               Foreground="{StaticResource BlueAccent}"/>
+                                    <TextBlock Text="Screenshots" FontSize="11" Foreground="{StaticResource TextSecondary}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}"
+                                    BorderThickness="1" CornerRadius="6" Padding="16,12" Margin="0,0,10,0" Width="140">
+                                <StackPanel>
+                                    <TextBlock x:Name="StatRecordingsText" Text="0" FontSize="24" FontWeight="Bold"
+                                               Foreground="{StaticResource RedAccent}"/>
+                                    <TextBlock Text="Recordings" FontSize="11" Foreground="{StaticResource TextSecondary}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}"
+                                    BorderThickness="1" CornerRadius="6" Padding="16,12" Margin="0,0,10,0" Width="140">
+                                <StackPanel>
+                                    <TextBlock x:Name="StatThisWeekText" Text="0" FontSize="24" FontWeight="Bold"
+                                               Foreground="{StaticResource GreenAccent}"/>
+                                    <TextBlock Text="This Week" FontSize="11" Foreground="{StaticResource TextSecondary}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}"
+                                    BorderThickness="1" CornerRadius="6" Padding="16,12" Width="140">
+                                <StackPanel>
+                                    <TextBlock x:Name="StatStorageText" Text="0 MB" FontSize="24" FontWeight="Bold"
+                                               Foreground="{StaticResource OrangeAccent}"/>
+                                    <TextBlock Text="Storage used" FontSize="11" Foreground="{StaticResource TextSecondary}"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <TextBlock Text="Recent Activity" FontWeight="SemiBold" FontSize="13"
+                                   Foreground="{StaticResource TextPrimary}" Margin="0,0,0,10"/>
+                        <TextBlock x:Name="RecentActivityEmptyText"
+                                   Text="Nothing yet -- take a screenshot or start a recording to see it here."
+                                   Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Visibility="Collapsed"/>
+                        <StackPanel x:Name="RecentActivityList"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+            <Grid x:Name="GalleryPage" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <StackPanel Grid.Row="0" Margin="16,14,16,10">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock x:Name="HeadingText" Text="How-To Guide" FontSize="20" FontWeight="Bold"
+                        <TextBlock x:Name="HeadingText" Text="Screenshots" FontSize="20" FontWeight="Bold"
                                    Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"/>
                         <Border Background="#302D7DD2" CornerRadius="10" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
                             <TextBlock x:Name="CountBadgeText" Text="0 captures" FontSize="11" Foreground="{StaticResource BlueAccent}"/>
@@ -326,6 +446,11 @@
                              PreviewKeyDown="CaptureList_PreviewKeyDown">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
+                                <!-- Without this, a UniformGrid row stretches its items to fill the
+                                     row's full height, and with few items (e.g. a single capture),
+                                     that row IS the whole viewport, so the card would stretch to fill
+                                     it top-to-bottom instead of staying its natural card height. -->
+                                <Setter Property="VerticalAlignment" Value="Top"/>
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
@@ -349,18 +474,97 @@
                 </ScrollViewer>
             </Grid>
 
-            <StackPanel x:Name="RecordingsPage" Visibility="Collapsed"
-                        VerticalAlignment="Center" HorizontalAlignment="Center">
-                <TextBlock Text="&#127916;" FontSize="48" HorizontalAlignment="Center"
-                           Foreground="{StaticResource TextSecondary}"/>
-                <TextBlock Text="No recordings yet" FontSize="18" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimary}" HorizontalAlignment="Center" Margin="0,12,0,6"/>
-                <TextBlock Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" TextAlignment="Center"
-                           MaxWidth="360" HorizontalAlignment="Center">
-                    Screen recording is planned for a future version. The Record Video button and
-                    Ctrl+Shift+R are wired up, but nothing is captured yet.
-                </TextBlock>
-            </StackPanel>
+            <Grid x:Name="RecordingsPage" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="16,14,16,10">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Recordings" FontSize="20" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"/>
+                        <Border Background="#302D7DD2" CornerRadius="10" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="RecordingCountBadgeText" Text="0 recordings" FontSize="11" Foreground="{StaticResource BlueAccent}"/>
+                        </Border>
+                    </StackPanel>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Button x:Name="RecordingSelectAllBtn" Content="Select all" Padding="10,5" Margin="4,0"
+                                    Background="Transparent" Foreground="{StaticResource TextSecondary}"
+                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                    Click="RecordingSelectAllBtn_Click"/>
+                            <Button x:Name="RecordingDeleteSelectedBtn" Content="Delete" Padding="10,5" Margin="4,0"
+                                    Background="#30E5484D" Foreground="{StaticResource RedAccent}"
+                                    BorderBrush="{StaticResource RedAccent}" BorderThickness="1"
+                                    IsEnabled="False" Click="RecordingDeleteSelectedBtn_Click"
+                                    ToolTip="Delete the selected recording(s) (Del)"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="RecordingGridViewBtn" Grid.Column="2" Content="Grid" Padding="10,5" Margin="4,0"
+                                      IsChecked="True" Click="RecordingGridViewBtn_Click"/>
+                        <ToggleButton x:Name="RecordingListViewBtn" Grid.Column="3" Content="List" Padding="10,5" Margin="4,0"
+                                      Click="RecordingListViewBtn_Click"/>
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel x:Name="RecordingsEmptyState" Grid.Row="1"
+                            VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock Text="&#127916;" FontSize="48" HorizontalAlignment="Center"
+                               Foreground="{StaticResource TextSecondary}"/>
+                    <TextBlock Text="No recordings yet" FontSize="18" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimary}" HorizontalAlignment="Center" Margin="0,12,0,6"/>
+                    <TextBlock Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="360" HorizontalAlignment="Center">
+                        Press Ctrl+Shift+R (or the Record Video button) to record your current
+                        monitor. Press it again to stop -- the video is saved to your workspace folder.
+                    </TextBlock>
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                              Background="{StaticResource WindowBg}">
+                    <ListBox x:Name="RecordingList" Margin="12" Background="Transparent" BorderThickness="0"
+                             HorizontalContentAlignment="Stretch"
+                             SelectionMode="Extended"
+                             ItemsPanel="{StaticResource RecordingGridPanel}"
+                             ItemTemplate="{StaticResource RecordingCardTemplate}"
+                             SelectionChanged="RecordingList_SelectionChanged"
+                             MouseDoubleClick="RecordingList_DoubleClick"
+                             PreviewKeyDown="RecordingList_PreviewKeyDown">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <!-- Without this, a UniformGrid row stretches its items to fill the
+                                     row's full height, and with few recordings (even just one),
+                                     that row IS the whole viewport, so the card would stretch to fill
+                                     it top-to-bottom instead of staying its natural card height. -->
+                                <Setter Property="VerticalAlignment" Value="Top"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Card" Margin="6" Padding="10" CornerRadius="4"
+                                                    Background="{StaticResource CardBg}"
+                                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BlueAccent}"/>
+                                                    <Setter TargetName="Card" Property="BorderThickness" Value="2"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </ScrollViewer>
+            </Grid>
             </Grid>
 
             <!-- Details panel -->
@@ -435,6 +639,47 @@
 
                         <Button Content="Edit Capture" Click="Edit_Click" Margin="0,18,0,0" Padding="0,8"
                                 Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                    </StackPanel>
+
+                    <StackPanel x:Name="RecordingDetailsContent" Visibility="Collapsed">
+                        <TextBlock Text="Title" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,4,0,4"/>
+                        <TextBox x:Name="RecordingDetailTitleBox" Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                                 BorderThickness="0" Padding="6,4" TextChanged="RecordingDetailTitleBox_TextChanged"/>
+
+                        <TextBlock Text="Description" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBox x:Name="RecordingDetailDescriptionBox" Background="#3A3A3D" Foreground="{StaticResource TextPrimary}"
+                                 BorderThickness="0" Padding="6,4" Height="60" TextWrapping="Wrap" AcceptsReturn="True"
+                                 TextChanged="RecordingDetailDescriptionBox_TextChanged"/>
+
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="RecordingSavedText" Grid.Column="0" Text="" FontSize="11"
+                                       Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                            <Button Grid.Column="1" Content="Save" Click="SaveRecordingDetails_Click" Padding="16,6"
+                                    Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                        </Grid>
+
+                        <TextBlock Text="Created" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="RecordingDetailCreatedText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Duration" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="RecordingDetailDurationText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="Size" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="RecordingDetailSizeText" Foreground="{StaticResource TextPrimary}"/>
+
+                        <TextBlock Text="File" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,12,0,4"/>
+                        <TextBlock x:Name="RecordingDetailPathText" Foreground="{StaticResource TextPrimary}"
+                                   TextWrapping="Wrap" FontSize="11"/>
+
+                        <Button Content="Play" Click="PlayRecording_Click" Margin="0,18,0,0" Padding="0,8"
+                                Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                        <Button Content="Show in folder" Click="ShowRecordingInFolder_Click" Margin="0,8,0,0" Padding="0,8"
+                                Background="Transparent" Foreground="{StaticResource TextSecondary}"
+                                BorderBrush="{StaticResource CardBorder}" BorderThickness="1"/>
                     </StackPanel>
                 </StackPanel>
             </Border>

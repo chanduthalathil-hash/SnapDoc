@@ -13,8 +13,12 @@ public sealed class Capture
 {
     public Guid Id { get; } = Guid.NewGuid();
 
-    /// <summary>When the capture was taken. Used for workspace sorting and default file names.</summary>
-    public DateTime CreatedAt { get; } = DateTime.Now;
+    /// <summary>
+    /// When the capture was taken. Used for workspace sorting and default file names.
+    /// <c>init</c> (not a plain getter) so <see cref="Services.WorkspaceService"/> can restore the
+    /// original timestamp when reloading a previously-saved PNG on startup.
+    /// </summary>
+    public DateTime CreatedAt { get; init; } = DateTime.Now;
 
     /// <summary>User-editable title. Shows in the workspace and becomes the step heading on export.</summary>
     public string Title { get; set; } = "Untitled capture";

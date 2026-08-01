@@ -42,12 +42,18 @@ public sealed class GdiCaptureEngine : ICaptureEngine
 
     public BitmapSource CaptureCurrentMonitor()
     {
+        var r = GetCurrentMonitorBounds();
+        return BitBltGrab(r.X, r.Y, r.Width, r.Height);
+    }
+
+    public Int32Rect GetCurrentMonitorBounds()
+    {
         GetCursorPos(out POINT p);
         nint hMon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         GetMonitorInfo(hMon, ref mi);
         var rc = mi.rcMonitor;
-        return BitBltGrab(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+        return new Int32Rect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
     }
 
     public BitmapSource CaptureAllScreens()
@@ -57,6 +63,23 @@ public sealed class GdiCaptureEngine : ICaptureEngine
         int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         return BitBltGrab(x, y, w, h);
+    }
+
+    public Int32Rect GetWindowBounds(nint hwnd)
+    {
+        if (!GetWindowRect(hwnd, out RECT rc))
+            throw new InvalidOperationException("Could not get window bounds.");
+        return new Int32Rect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+    }
+
+    /// <summary>Same grab as <see cref="CaptureRegion"/>, plus the mouse cursor drawn on top --
+    /// BitBlt never includes it since it isn't part of any window's drawn content. Used by the
+    /// recorder (screenshots don't need it; a cursor mid-frame there would just be noise).</summary>
+    public BitmapSource CaptureRegionWithCursor(Int32Rect r)
+    {
+        if (r.Width <= 0 || r.Height <= 0)
+            throw new ArgumentException("Capture region must have positive size.", nameof(r));
+        return BitBltGrab(r.X, r.Y, r.Width, r.Height, drawCursor: true);
     }
 
     /// <summary>The one capture mode with an unambiguous target: hwnd is exactly what the user
@@ -105,7 +128,7 @@ public sealed class GdiCaptureEngine : ICaptureEngine
     /// with Thread.Sleep here previously made Windows treat SnapDoc as unresponsive mid-capture
     /// and paint over its own windows -- trading one bad capture for a worse one.
     /// </summary>
-    private static BitmapSource BitBltGrab(int x, int y, int width, int height)
+    private static BitmapSource BitBltGrab(int x, int y, int width, int height, bool drawCursor = false)
     {
         nint screenDc = GetDC(IntPtr.Zero);
         nint memDc = CreateCompatibleDC(screenDc);
@@ -115,6 +138,8 @@ public sealed class GdiCaptureEngine : ICaptureEngine
         {
             if (!BitBlt(memDc, 0, 0, width, height, screenDc, x, y, SRCCOPY | CAPTUREBLT))
                 throw new InvalidOperationException("BitBlt failed (protected content?).");
+
+            if (drawCursor) DrawCursorOverlay(memDc, x, y);
 
             var source = Imaging.CreateBitmapSourceFromHBitmap(
                 hBitmap, IntPtr.Zero, Int32Rect.Empty,
@@ -128,6 +153,29 @@ public sealed class GdiCaptureEngine : ICaptureEngine
             DeleteObject(hBitmap);
             DeleteDC(memDc);
             ReleaseDC(IntPtr.Zero, screenDc);
+        }
+    }
+
+    /// <summary>Paint the current system cursor onto memDc at its real screen position (offset by
+    /// the captured region's origin). GetIconInfo hands back two GDI bitmap handles that WE own --
+    /// this runs once per recorded frame, so leaking them would exhaust GDI handles over a
+    /// multi-minute recording, hence the finally block.</summary>
+    private static void DrawCursorOverlay(nint memDc, int regionX, int regionY)
+    {
+        var ci = new CURSORINFO { cbSize = Marshal.SizeOf<CURSORINFO>() };
+        if (!GetCursorInfo(ref ci) || ci.flags != CURSOR_SHOWING || ci.hCursor == IntPtr.Zero) return;
+
+        if (!GetIconInfo(ci.hCursor, out ICONINFO info)) return;
+        try
+        {
+            int x = ci.ptScreenPos.X - regionX - info.xHotspot;
+            int y = ci.ptScreenPos.Y - regionY - info.yHotspot;
+            DrawIcon(memDc, x, y, ci.hCursor);
+        }
+        finally
+        {
+            if (info.hbmMask != IntPtr.Zero) DeleteObject(info.hbmMask);
+            if (info.hbmColor != IntPtr.Zero) DeleteObject(info.hbmColor);
         }
     }
 
@@ -166,10 +214,20 @@ public sealed class GdiCaptureEngine : ICaptureEngine
     private const int SM_CYVIRTUALSCREEN = 79;
     private const uint MONITOR_DEFAULTTONEAREST = 2;
 
+    private const int CURSOR_SHOWING = 0x1;
+
     [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] private struct RECT { public int left, top, right, bottom; }
     [StructLayout(LayoutKind.Sequential)]
     private struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CURSORINFO { public int cbSize; public int flags; public nint hCursor; public POINT ptScreenPos; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ICONINFO { public bool fIcon; public int xHotspot; public int yHotspot; public nint hbmMask; public nint hbmColor; }
+
+    [DllImport("user32.dll")] private static extern bool GetCursorInfo(ref CURSORINFO pci);
+    [DllImport("user32.dll")] private static extern bool GetIconInfo(nint hIcon, out ICONINFO piconinfo);
+    [DllImport("user32.dll")] private static extern bool DrawIcon(nint hdc, int x, int y, nint hIcon);
 
     [DllImport("user32.dll")] private static extern nint GetDC(nint hWnd);
     [DllImport("user32.dll")] private static extern int ReleaseDC(nint hWnd, nint hDC);

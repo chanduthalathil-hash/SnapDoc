@@ -28,6 +28,7 @@ public sealed class AppSettings
     public string HotkeyFullScreen { get; set; } = "Ctrl+Shift+2";
     public string HotkeyWindow { get; set; } = "Ctrl+Shift+3";
     public string HotkeyRecord { get; set; } = "Ctrl+Shift+R";
+    public string HotkeyPauseResume { get; set; } = "Ctrl+Shift+P";
 
     public bool CopyToClipboardOnCapture { get; set; } = true;
     public bool OpenEditorOnCapture { get; set; } = true;

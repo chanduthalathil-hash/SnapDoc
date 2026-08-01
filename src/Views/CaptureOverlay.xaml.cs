@@ -128,6 +128,14 @@ public partial class CaptureOverlay : Window
 
     private void PickWindowUnderCursor()
     {
+        // The overlay itself is a real, visible, non-click-through window spanning the whole
+        // virtual screen (it has to be, to receive this very click) -- so WindowFromPoint, called
+        // while it's still showing, just finds the overlay's own hwnd every time, never whatever's
+        // actually underneath. Hiding it first (synchronous Win32 SW_HIDE, not WPF's Hide()/Close(),
+        // which don't take effect in time for the very next line) makes the query see past it.
+        nint overlayHwnd = new WindowInteropHelper(this).Handle;
+        ShowWindow(overlayHwnd, SW_HIDE);
+
         GetCursorPos(out POINT pt);
         nint hwnd = WindowFromPoint(pt);
         // walk up to the top-level owner
@@ -140,6 +148,7 @@ public partial class CaptureOverlay : Window
 
     // --- Win32 ---
     private const uint GA_ROOT = 2;
+    private const int SW_HIDE = 0;
     private const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
     [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
@@ -147,4 +156,5 @@ public partial class CaptureOverlay : Window
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")] private static extern bool ShowWindow(nint hWnd, int nCmdShow);
 }

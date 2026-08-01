@@ -24,6 +24,15 @@ public partial class App : Application
     public static IScreenRecorder Recorder { get; private set; } = null!;
     public static WorkspaceService Workspace { get; private set; } = null!;
     public static HotkeyService Hotkeys { get; private set; } = null!;
+    public static TrayIcon? Tray { get; private set; }
+
+    /// <summary>Set by <see cref="RequestExit"/> before it calls Shutdown(). MainWindow's
+    /// OnClosing override cancels a plain user-initiated close (to hide-to-tray instead) -- but
+    /// Application.Shutdown() closes every open window as part of shutting down, and a *cancelled*
+    /// Close() on any one of them aborts that whole sequence, silently leaving the process (and
+    /// every other still-open window, e.g. the recording toolbar) running. Checking this flag is
+    /// what lets MainWindow tell "the user clicked X" apart from "the app is exiting".</summary>
+    public static bool IsExiting { get; private set; }
 
     private TrayIcon? _tray;
 
@@ -54,14 +63,15 @@ public partial class App : Application
         QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 
         Settings      = AppSettings.Load();
-        CaptureEngine = new GdiCaptureEngine();              // swap for WgcCaptureEngine later
-        OcrEngine     = new WindowsOcrEngine();              // swap/add TesseractOcrEngine later
-        Recorder      = new StubScreenRecorder();            // swap for a real recorder later
+        CaptureEngine = new GdiCaptureEngine();               // swap for WgcCaptureEngine later
+        OcrEngine     = new WindowsOcrEngine();               // swap/add TesseractOcrEngine later
+        Recorder      = new MfScreenRecorder(CaptureEngine);  // Media Foundation SinkWriter, H.264
         Workspace     = new WorkspaceService(Settings);
         Hotkeys       = new HotkeyService();
 
         // Tray icon owns the app lifetime and the global hotkeys.
         _tray = new TrayIcon();
+        Tray = _tray;
         _tray.Initialize();
 
         RegisterHotkeys();
@@ -72,17 +82,37 @@ public partial class App : Application
         _ = TrayIcon.CheckForUpdatesOnStartup();
     }
 
+    /// <summary>The one correct way to actually quit SnapDoc -- see <see cref="IsExiting"/>. Every
+    /// exit path (tray menu, future "Exit" buttons, etc.) should call this instead of
+    /// Application.Current.Shutdown() directly.</summary>
+    public static void RequestExit()
+    {
+        IsExiting = true;
+        // Belt-and-suspenders alongside the IsExiting flag: close the toolbar/countdown explicitly
+        // rather than only relying on Shutdown()'s own window enumeration reaching them.
+        CaptureController.CloseRecordingToolbarForShutdown();
+        Current.Shutdown();
+    }
+
     private void RegisterHotkeys()
     {
         Hotkeys.Register(Settings.HotkeyRegion,     () => CaptureController.StartRegionCapture());
         Hotkeys.Register(Settings.HotkeyFullScreen, () => CaptureController.CaptureCurrentMonitor());
         Hotkeys.Register(Settings.HotkeyWindow,     () => CaptureController.StartWindowCapture());
-        // Record hotkey wired but StubScreenRecorder will show a friendly "not yet" message.
         Hotkeys.Register(Settings.HotkeyRecord,     () => CaptureController.ToggleRecording());
+        Hotkeys.Register(Settings.HotkeyPauseResume, () => CaptureController.TogglePauseAsync());
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // Quitting mid-recording would otherwise leave the SinkWriter never Finalize()'d --
+        // Finalize is what writes the MP4's moov atom, so skipping it produces an unplayable
+        // file, not just a short one. Blocking briefly here to let it finish is worth that.
+        if (Recorder?.IsRecording == true)
+        {
+            try { Recorder.StopAsync().GetAwaiter().GetResult(); } catch { }
+        }
+
         Hotkeys?.Dispose();
         _tray?.Dispose();
         Settings?.Save();
