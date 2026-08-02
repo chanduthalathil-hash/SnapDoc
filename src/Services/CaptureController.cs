@@ -221,6 +221,7 @@ public static class CaptureController
     // stays in sync regardless of which one the user used.
 
     private static RecordingToolbar? _toolbar;
+    private static RecordingBoundary? _boundary;
     private static string? _recordingPath;
     private static DateTime _recordingStartedAt;
 
@@ -243,6 +244,8 @@ public static class CaptureController
     {
         try { _toolbar?.Close(); } catch { /* already closing/closed */ }
         _toolbar = null;
+        try { _boundary?.Close(); } catch { /* already closing/closed */ }
+        _boundary = null;
     }
 
     /// <summary>Called from MainWindow.OnClosing. Closing the workspace window is how most users
@@ -341,6 +344,9 @@ public static class CaptureController
             App.Tray?.SetRecordingIndicator(true);
             toolbar.ShowRecordingState(options);
             toolbar.Show();
+
+            _boundary = new RecordingBoundary(region);
+            _boundary.Show();
         }
         catch (Exception ex)
         {
@@ -364,6 +370,8 @@ public static class CaptureController
         }
         finally
         {
+            try { _boundary?.Close(); } catch { /* already closing/closed */ }
+            _boundary = null;
             RestoreAppWindows();
             ExitCapture();
             App.Tray?.SetRecordingIndicator(false);
