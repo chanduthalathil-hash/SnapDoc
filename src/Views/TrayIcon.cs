@@ -119,7 +119,7 @@ public sealed class TrayIcon : IDisposable
         try
         {
             var info = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/icon.ico"));
-            if (info != null) return new Icon(info.Stream);
+            if (info != null) using (info.Stream) return new Icon(info.Stream);
         }
         catch { /* fall back to a generic icon rather than fail startup over branding */ }
         return SystemIcons.Application;
@@ -135,7 +135,14 @@ public sealed class TrayIcon : IDisposable
     // root Visual is exactly what throws "The root Visual of a VisualTarget cannot have a
     // parent." The guard below is safe with a plain bool (no lock) because the re-entrant call
     // and the original call both run on the same UI thread.
-    private void ShowMain()
+    private void ShowMain() => ShowMain(null);
+
+    /// <summary>Same as the parameterless overload, but also switches <see cref="MainWindow"/> to a
+    /// specific page first -- used by the video editor's sidebar nav ("Home"/"Screenshots"/
+    /// "Recordings") to jump straight to the right page instead of leaving whatever was showing
+    /// last. Page names match the editor sidebar's row names 1:1; unrecognized/null names just show
+    /// the window as-is, same as the plain tray-menu/double-click path.</summary>
+    public void ShowMain(string? page)
     {
         if (_showingMain) return;
         _showingMain = true;
@@ -145,6 +152,12 @@ public sealed class TrayIcon : IDisposable
             _main.Show();
             _main.WindowState = WindowState.Normal;
             _main.Activate();
+            switch (page)
+            {
+                case "Home": _main.ShowHomePage(); break;
+                case "Screenshots": _main.ShowGalleryPage(); break;
+                case "Recordings": _main.ShowRecordingsPage(); break;
+            }
         }
         finally { _showingMain = false; }
     }

@@ -28,21 +28,6 @@ public partial class EditorWindow : Window
 {
     private enum Tool { Select, Arrow, Rectangle, Ellipse, Line, Highlight, Text, Step, ColorPicker, Crop, Blur, Callout }
 
-    // Temporary diagnostic trail for the "Text tool does nothing" report -- traces the click path
-    // so we can see exactly which branch runs (or doesn't) without guessing. Remove once resolved.
-    private static readonly string LogPath =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SnapDoc", "editor-debug.log");
-    private static void Log(string msg)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            File.AppendAllText(LogPath, $"{DateTime.Now:HH:mm:ss.fff} {msg}\r\n");
-        }
-        catch { }
-    }
-
     private readonly Capture _capture;
     private Tool _tool = Tool.Select;
     private Color _color = Colors.Red;
@@ -334,7 +319,6 @@ public partial class EditorWindow : Window
                 var center = new Point(step.Bounds.X + step.Radius, step.Bounds.Y + step.Radius);
                 double dist = (localP - center).Length;
                 bool hit = dist <= step.Radius + pad;
-                Log($"HitTest Step: p={p} center={center} radius={step.Radius} dist={dist:0.0} hit={hit}");
                 return hit;
             }
             case EllipseAnnotation:
@@ -353,7 +337,6 @@ public partial class EditorWindow : Window
                 var localP = ToLocal(p, tb, text.Rotation);
                 var inflated = tb; inflated.Inflate(pad, pad);
                 bool hit = inflated.Contains(localP);
-                Log($"HitTest Text: p={p} bounds={tb} pad={pad:0.0} localP={localP} hit={hit}");
                 return hit;
             }
             default:
@@ -464,9 +447,6 @@ public partial class EditorWindow : Window
     private void DrawSelectionAdorner()
     {
         SelectionLayer.Children.Clear();
-        Log($"DrawSelectionAdorner: selected={_selected?.GetType().Name ?? "null"} isVisible={_selected?.IsVisible} " +
-            $"isEditingText={_selected == _editingText} layerW={SelectionLayer.ActualWidth} layerH={SelectionLayer.ActualHeight} " +
-            $"layerVis={SelectionLayer.Visibility} zoom={CanvasZoom.ScaleX}");
         // While actively editing text, InlineTextEditor itself is the visual affordance --
         // drawing handles/outline around it too would be redundant clutter.
         if (_selected == null || !_selected.IsVisible || _selected == _editingText) return;
@@ -527,12 +507,8 @@ public partial class EditorWindow : Window
             }
         }
         SelectionLayer.Children.Add(new VisualHost(dv));
-        Log($"DrawSelectionAdorner: added visual, SelectionLayer.Children.Count={SelectionLayer.Children.Count}");
         }
-        catch (Exception ex)
-        {
-            Log($"DrawSelectionAdorner THREW: {ex}");
-        }
+        catch { /* rendering the selection adorner is cosmetic -- a failure here shouldn't crash the editor */ }
     }
 
     // A dashed bounding-box outline reads fine for boxy shapes, but for round ones (Step, Ellipse)
@@ -561,7 +537,6 @@ public partial class EditorWindow : Window
 
     private void SetSelected(Annotation? a)
     {
-        Log($"SetSelected: {a?.GetType().Name ?? "null"}");
         _selected = a;
         _syncingSelection = true;
         LayersList.SelectedItem = a;
@@ -611,7 +586,6 @@ public partial class EditorWindow : Window
     private void LayersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingSelection) return;
-        Log("LayersList_SelectionChanged (panel click, not canvas)");
         SetSelected(LayersList.SelectedItem as Annotation);
     }
 
@@ -619,7 +593,6 @@ public partial class EditorWindow : Window
 
     private void BeginTextEdit(TextAnnotation t, bool isNew)
     {
-        Log($"BeginTextEdit enter: isNew={isNew} bounds={t.Bounds}");
         CommitTextEdit(); // finish whatever (if anything) was already being edited first
         _editingText = t;
         _editingIsNew = isNew;
@@ -639,9 +612,6 @@ public partial class EditorWindow : Window
         RefreshCanvas();
         InlineTextEditor.Focus();
         InlineTextEditor.SelectAll();
-        Log($"BeginTextEdit exit: Margin={InlineTextEditor.Margin} W={InlineTextEditor.Width} H={InlineTextEditor.Height} " +
-            $"Visibility={InlineTextEditor.Visibility} IsFocused={InlineTextEditor.IsFocused} IsKeyboardFocused={InlineTextEditor.IsKeyboardFocused} " +
-            $"ActualW={InlineTextEditor.ActualWidth} ActualH={InlineTextEditor.ActualHeight} zoom={CanvasZoom.ScaleX}");
     }
 
     /// <summary>Ctrl+Enter or clicking outside (LostKeyboardFocus) both call this. A brand-new,
@@ -657,7 +627,6 @@ public partial class EditorWindow : Window
         InlineTextEditor.Visibility = Visibility.Collapsed;
 
         string newText = InlineTextEditor.Text;
-        Log($"CommitTextEdit: isNew={isNew} newText=\"{newText}\"");
         if (isNew)
         {
             if (!string.IsNullOrWhiteSpace(newText))
@@ -697,7 +666,6 @@ public partial class EditorWindow : Window
     private void BeginSelectDrag(Point p)
     {
         var handle = HitTestHandle(p);
-        Log($"BeginSelectDrag: p={p} handleHit={handle} selectedBefore={_selected?.GetType().Name ?? "null"}");
         if (handle != null && _selected != null)
         {
             // Locked: stay selected and do nothing, rather than falling through to a body hit-test
@@ -713,7 +681,6 @@ public partial class EditorWindow : Window
         }
 
         var hit = HitTestTopmost(p);
-        Log($"BeginSelectDrag: bodyHit={hit?.GetType().Name ?? "null"}");
         if (hit != null)
         {
             SetSelected(hit);
@@ -907,7 +874,6 @@ public partial class EditorWindow : Window
         CommitTextEdit();
 
         _startPt = e.GetPosition(AnnotationLayer);
-        Log($"Layer_MouseDown: tool={_tool} pt={_startPt} clickCount={e.ClickCount} originalSource={e.OriginalSource?.GetType().Name}");
 
         if (_tool == Tool.Select)
         {
@@ -1299,7 +1265,7 @@ public partial class EditorWindow : Window
     private void Tool_Rectangle(object s, RoutedEventArgs e)   { _tool = Tool.Rectangle;   SetActiveTool(s); }
     private void Tool_Ellipse(object s, RoutedEventArgs e)     { _tool = Tool.Ellipse;     SetActiveTool(s); }
     private void Tool_Highlight(object s, RoutedEventArgs e)   { _tool = Tool.Highlight;   SetActiveTool(s); }
-    private void Tool_Text(object s, RoutedEventArgs e)        { Log("Tool_Text clicked"); _tool = Tool.Text;        SetActiveTool(s); }
+    private void Tool_Text(object s, RoutedEventArgs e)        { _tool = Tool.Text;        SetActiveTool(s); }
     private void Tool_Step(object s, RoutedEventArgs e)        { _tool = Tool.Step;        SetActiveTool(s); }
     private void Tool_ColorPicker(object s, RoutedEventArgs e) { _tool = Tool.ColorPicker; SetActiveTool(s); }
     private void Tool_Blur(object s, RoutedEventArgs e)        { _tool = Tool.Blur;        SetActiveTool(s); }

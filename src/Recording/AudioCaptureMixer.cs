@@ -94,7 +94,15 @@ public sealed class AudioCaptureMixer : IDisposable
     /// whichever native format each source captured in. Always returns exactly byteCount bytes
     /// (silence-padded) as long as at least one source is active, so the caller's timestamp math
     /// stays simple. Called on the recorder's own audio thread at a steady cadence.</summary>
-    public byte[] ReadMixedPcm16(int byteCount)
+    public byte[] ReadMixedPcm16(int byteCount) => ReadAllPcm16(byteCount).Mixed;
+
+    /// <summary>Same pull as <see cref="ReadMixedPcm16"/>, but also hands back the two pre-mix
+    /// chunks (already normalized to 16-bit PCM at <see cref="SampleRate"/>/<see cref="Channels"/>)
+    /// so a caller that wants independent mic/system tracks -- not just the mixed one -- doesn't
+    /// have to read the underlying WASAPI buffers a second time (they're drain-once; reading twice
+    /// per cycle would desync the two sources against each other and against the mixed track).
+    /// Null for whichever source wasn't enabled for this recording.</summary>
+    public (byte[] Mixed, byte[]? Mic, byte[]? System) ReadAllPcm16(int byteCount)
     {
         byte[]? micChunk = _micBuffer != null ? ReadExact(_micBuffer, byteCount) : null;
         byte[]? sysChunk = _systemResampled != null ? ReadExact(_systemResampled, byteCount)
@@ -108,11 +116,15 @@ public sealed class AudioCaptureMixer : IDisposable
 
         // sysChunk (whether passed through untouched or resampled) is always already in
         // _outputFormat by construction -- see the constructor.
-        if (micChunk != null && sysChunk != null)
-            return MixToPcm16(micChunk, _micCapture!.WaveFormat, sysChunk, _outputFormat);
-        if (micChunk != null) return ToPcm16(micChunk, _micCapture!.WaveFormat);
-        if (sysChunk != null) return ToPcm16(sysChunk, _outputFormat);
-        return Array.Empty<byte>();
+        byte[]? micPcm = micChunk != null ? ToPcm16(micChunk, _micCapture!.WaveFormat) : null;
+        byte[]? sysPcm = sysChunk != null ? ToPcm16(sysChunk, _outputFormat) : null;
+
+        byte[] mixed = micPcm != null && sysPcm != null ? MixPcm16(micPcm, sysPcm)
+                      : micPcm != null ? micPcm
+                      : sysPcm != null ? sysPcm
+                      : Array.Empty<byte>();
+
+        return (mixed, micPcm, sysPcm);
     }
 
     private static byte[] ReadExact(IWaveProvider source, int byteCount)
@@ -148,17 +160,17 @@ public sealed class AudioCaptureMixer : IDisposable
         return pcm;
     }
 
-    private static byte[] MixToPcm16(byte[] micRaw, WaveFormat micFormat, byte[] sysRaw, WaveFormat sysFormat)
+    /// <summary>Sums two already-16-bit-PCM buffers sample-by-sample, clamped against overflow.
+    /// Also reused by <see cref="Recording.VideoEditExporter"/> at export time to re-mix the
+    /// mic/system sidecar tracks at the editor's chosen volumes.</summary>
+    internal static byte[] MixPcm16(byte[] aPcm, byte[] bPcm)
     {
-        var micPcm = ToPcm16(micRaw, micFormat);
-        var sysPcm = ToPcm16(sysRaw, sysFormat);
-
-        int n = Math.Min(micPcm.Length, sysPcm.Length) / 2;
+        int n = Math.Min(aPcm.Length, bPcm.Length) / 2;
         var mixed = new byte[n * 2];
         for (int i = 0; i < n; i++)
         {
-            short a = BitConverter.ToInt16(micPcm, i * 2);
-            short b = BitConverter.ToInt16(sysPcm, i * 2);
+            short a = BitConverter.ToInt16(aPcm, i * 2);
+            short b = BitConverter.ToInt16(bPcm, i * 2);
             short clamped = (short)Math.Clamp(a + b, short.MinValue, short.MaxValue);
             mixed[i * 2] = (byte)(clamped & 0xFF);
             mixed[i * 2 + 1] = (byte)((clamped >> 8) & 0xFF);

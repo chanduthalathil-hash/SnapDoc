@@ -28,4 +28,17 @@ public sealed class RecordingClip
     public TimeSpan? Duration { get; init; }
 
     public string DurationText => Duration is { } d ? d.ToString(d.Hours > 0 ? @"h\:mm\:ss" : @"m\:ss") : "";
+
+    /// <summary>
+    /// Sidecar tracks written alongside <see cref="FilePath"/> in a "&lt;basename&gt;.tracks/"
+    /// folder next to it -- see MfScreenRecorder's class doc. Null for whichever source wasn't
+    /// enabled for this recording, or for one made before this feature existed (no ".tracks"
+    /// folder at all). The video editor uses these for independent volume/mute per track; a
+    /// recording with neither just edits the same reduced way it always has (trim/cut/replace-or-
+    /// remove-audio against the one combined file). Webcam has no sidecar of its own -- it's
+    /// composited live into <see cref="FilePath"/>'s own pixels during recording, so there's nothing
+    /// separate to edit or mute after the fact.
+    /// </summary>
+    public string? MicAudioPath { get; init; }
+    public string? SystemAudioPath { get; init; }
 }

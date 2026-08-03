@@ -358,32 +358,69 @@ public static class CaptureController
         }
     }
 
+    // Guards the entire stop/finalize sequence against running twice for one session. IsRecording
+    // only flips to false at the very end of Recorder.StopAsync() (after its video/audio threads have
+    // both observed the stop request and exited), which is not instant -- a second stop trigger
+    // landing in that window (hotkey fired right after clicking the toolbar's Stop button, the tray
+    // menu item, etc.) used to run this whole method a second time concurrently: two overlapping
+    // calls each independently calling AddRecording -- which is exactly how one recording session
+    // turned into several list entries and stray files. Same pattern as _captureInProgress above,
+    // just for the stop half of recording specifically.
+    private static bool _stoppingRecording;
+
+    /// <summary>Stops actual capture and registers the recording -- deliberately bounded by nothing
+    /// slower than Recorder.StopAsync() itself (flushing the last few frames/samples), so clicking
+    /// Stop feels instant regardless of whether webcam compositing has anything to do. Compositing
+    /// used to run IN this method, awaited, before the recording was registered or the toolbar hid --
+    /// for a recording with webcam, that meant "Stop" could take several real seconds (worse with the
+    /// retry logic added for the finalize-timing race), which read as broken and invited exactly the
+    /// repeated clicking that turned into the "many files" regression. Webcam is now composited live
+    /// during recording instead (see MfScreenRecorder's class doc), so there's no post-record step
+    /// left to wait for at all -- stop capture, register the recording, hide the toolbar, done.</summary>
     public static async Task StopRecordingAsync()
     {
+        if (_stoppingRecording) return;
+        _stoppingRecording = true;
+        _toolbar?.SetStoppingState(true);
         try
         {
-            await App.Recorder.StopAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Recording finished with an error:\n{ex.Message}", "SnapDoc — Recording", MessageBoxButton.OK, MessageBoxImage.Warning);
+            try
+            {
+                await App.Recorder.StopAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Recording finished with an error:\n{ex.Message}", "SnapDoc — Recording", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                try { _boundary?.Close(); } catch { /* already closing/closed */ }
+                _boundary = null;
+                RestoreAppWindows();
+                ExitCapture();
+                App.Tray?.SetRecordingIndicator(false);
+            }
+
+            if (_recordingPath != null && System.IO.File.Exists(_recordingPath))
+            {
+                string recordingPath = _recordingPath;
+                string? micAudioPath = App.Recorder.LastMicAudioPath;
+                string? systemAudioPath = App.Recorder.LastSystemAudioPath;
+                var duration = DateTime.Now - _recordingStartedAt;
+
+                // Webcam (if any) is already baked into recordingPath's own pixels -- no separate
+                // sidecar, nothing left to fill in after the fact.
+                App.Workspace.AddRecording(recordingPath, duration, micAudioPath, systemAudioPath);
+            }
+            _recordingPath = null;
+
+            _toolbar?.ResetAndHideAfterStop();
         }
         finally
         {
-            try { _boundary?.Close(); } catch { /* already closing/closed */ }
-            _boundary = null;
-            RestoreAppWindows();
-            ExitCapture();
-            App.Tray?.SetRecordingIndicator(false);
+            _toolbar?.SetStoppingState(false); // no-op if ResetAndHideAfterStop already hid the panel; a safety net if an exception skipped it
+            _stoppingRecording = false;
         }
-
-        if (_recordingPath != null && System.IO.File.Exists(_recordingPath))
-        {
-            App.Workspace.AddRecording(_recordingPath, DateTime.Now - _recordingStartedAt);
-        }
-        _recordingPath = null;
-
-        _toolbar?.ResetAndHideAfterStop();
     }
 
     private static async void HandleNewCapture(BitmapSource bmp, string captureKind)

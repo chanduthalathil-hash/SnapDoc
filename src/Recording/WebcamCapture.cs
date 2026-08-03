@@ -57,37 +57,56 @@ public sealed class WebcamCapture : IDisposable
         _thread.Start();
     }
 
+    /// <summary>The negotiated frame size, known synchronously from device setup -- unlike an
+    /// actual frame, available before the capture loop has decoded anything. Used to configure a
+    /// sidecar SinkWriter's media type up front (see <see cref="MfScreenRecorder"/>).</summary>
+    public int Width => _frameWidth;
+    public int Height => _frameHeight;
+
     private void RunCaptureLoop()
     {
-        while (!_stop)
+        try
         {
-            IMFSample? sample;
-            try
+            while (!_stop)
             {
-                sample = _reader.ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, out _, out _, out _);
-            }
-            catch
-            {
-                break; // device unplugged mid-recording, etc. -- stop quietly, the PiP just disappears
-            }
-            if (sample == null) continue; // a stream-tick marker, not an actual frame
-
-            using (sample)
-            {
+                IMFSample? sample;
                 try
                 {
-                    using var buffer = sample.ConvertToContiguousBuffer();
-                    buffer.Lock(out nint ptr, out _, out int currentLength);
+                    sample = _reader.ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, out _, out _, out _);
+                }
+                catch
+                {
+                    break; // device unplugged mid-recording, etc. -- stop quietly, the PiP just disappears
+                }
+                if (sample == null) continue; // a stream-tick marker, not an actual frame
+
+                using (sample)
+                {
                     try
                     {
-                        var frame = new byte[currentLength];
-                        Marshal.Copy(ptr, frame, 0, currentLength);
-                        lock (_frameLock) _latestFrame = frame;
+                        using var buffer = sample.ConvertToContiguousBuffer();
+                        buffer.Lock(out nint ptr, out _, out int currentLength);
+                        try
+                        {
+                            var frame = new byte[currentLength];
+                            Marshal.Copy(ptr, frame, 0, currentLength);
+                            lock (_frameLock) _latestFrame = frame;
+                        }
+                        finally { buffer.Unlock(); }
                     }
-                    finally { buffer.Unlock(); }
+                    catch { /* a single bad frame shouldn't kill the webcam feed */ }
                 }
-                catch { /* a single bad frame shouldn't kill the webcam feed */ }
             }
+        }
+        finally
+        {
+            // Disposed here, by this thread, once it has actually stopped touching _reader --
+            // NOT from Dispose() on another thread. ReadSample above is a blocking synchronous
+            // call that can legitimately run past Dispose()'s Join timeout (a stalled/unplugged
+            // device, autoexposure hunting, etc.); disposing the reader out from under a thread
+            // still inside ReadSample/ConvertToContiguousBuffer would be a genuine COM
+            // use-after-dispose race, not just a leak.
+            try { _reader.Dispose(); } catch { }
         }
     }
 
@@ -104,7 +123,11 @@ public sealed class WebcamCapture : IDisposable
     public void Dispose()
     {
         _stop = true;
+        // NOT followed by our own _reader.Dispose() call even if Join times out -- see
+        // RunCaptureLoop's finally block, which is the sole owner of disposing _reader for exactly
+        // that reason. Disposing it here too, out from under a capture thread potentially still
+        // blocked inside ReadSample past this Join, would be the very COM use-after-dispose race
+        // that design avoids -- not just a leak this time, but a race that can crash outright.
         try { _thread.Join(500); } catch { }
-        try { _reader.Dispose(); } catch { }
     }
 }

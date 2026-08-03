@@ -22,6 +22,24 @@ public interface IScreenRecorder
     Task ResumeAsync();
     Task StopAsync();
 
+    /// <summary>Sidecar track paths written by the just-finished recording (see
+    /// <see cref="MfScreenRecorder"/>'s class doc), null for whichever source wasn't enabled.
+    /// Valid to read once <see cref="StopAsync"/> completes; that's when the sidecar SinkWriters
+    /// actually finish being finalized. There's no webcam equivalent -- webcam is composited live
+    /// into the main video's own pixels instead of getting its own file (see class doc).</summary>
+    string? LastMicAudioPath { get; }
+    string? LastSystemAudioPath { get; }
+
+    /// <summary>Wherever the live webcam PiP was last dragged to / however it was last shown or
+    /// hidden during the just-finished recording -- already baked into the output video's own
+    /// pixels frame-by-frame as it happened (see class doc), so unlike <see cref="LastMicAudioPath"/>
+    /// this isn't a separate file to read, just the final position for anything that wants to
+    /// display it (e.g. as a starting point if the user records again).</summary>
+    double LastWebcamAnchorX { get; }
+    double LastWebcamAnchorY { get; }
+    double LastWebcamSizeFraction { get; }
+    bool LastWebcamVisible { get; }
+
     /// <summary>No-op if that source wasn't enabled for the current recording.</summary>
     void SetMicrophoneMuted(bool muted);
     void SetSystemAudioMuted(bool muted);

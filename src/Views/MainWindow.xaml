@@ -677,6 +677,8 @@
 
                         <Button Content="Play" Click="PlayRecording_Click" Margin="0,18,0,0" Padding="0,8"
                                 Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
+                        <Button Content="Edit" Click="EditRecording_Click" Margin="0,8,0,0" Padding="0,8"
+                                Background="{StaticResource GreenAccent}" Foreground="White" BorderThickness="0"/>
                         <Button Content="Show in folder" Click="ShowRecordingInFolder_Click" Margin="0,8,0,0" Padding="0,8"
                                 Background="Transparent" Foreground="{StaticResource TextSecondary}"
                                 BorderBrush="{StaticResource CardBorder}" BorderThickness="1"/>

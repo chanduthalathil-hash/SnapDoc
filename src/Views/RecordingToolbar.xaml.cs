@@ -302,6 +302,10 @@ public partial class RecordingToolbar : Window
         finally { StartBtn.IsEnabled = true; }
     }
 
+    // Immediate feedback (disabled button, "Stopping…" label) is driven centrally from
+    // CaptureController.StopRecordingAsync() via SetStoppingState -- see its own doc comment -- so
+    // every trigger (this button, the hotkey, the tray menu) behaves the same way, not just a click
+    // reaching this specific handler.
     private async void StopBtn_Click(object sender, RoutedEventArgs e) => await CaptureController.StopRecordingAsync();
 
     private void PauseResumeBtn_Click(object sender, RoutedEventArgs e) => CaptureController.TogglePauseAsync();
@@ -396,5 +400,20 @@ public partial class RecordingToolbar : Window
         PauseResumeBtn.ToolTip = paused ? "Resume (Ctrl+Shift+P)" : "Pause (Ctrl+Shift+P)";
         RecStateText.Text = paused ? "PAUSED" : "REC";
         RecDot.Opacity = paused ? 0.4 : 1.0;
+    }
+
+    /// <summary>Called by CaptureController itself around the stop/finalize sequence, so a stop
+    /// triggered via hotkey or the tray menu -- not just this toolbar's own Stop button -- still
+    /// gives immediate feedback instead of leaving the toolbar looking unchanged (and clickable)
+    /// for however long webcam compositing takes. Always applies (no "only if currently showing
+    /// recording state" guard): this toolbar instance is reused across sessions (see EnsureToolbar),
+    /// so the reset-to-"Stop" call after finalize has to actually take effect even though
+    /// ResetAndHideAfterStop() -- which runs first -- has already collapsed RecordingPanel by then;
+    /// skipping it left the button stuck disabled/"Stopping…" for the NEXT recording too.</summary>
+    public void SetStoppingState(bool stopping)
+    {
+        StopBtn.IsEnabled = !stopping;
+        PauseResumeBtn.IsEnabled = !stopping;
+        StopBtnText.Text = stopping ? "Stopping…" : "Stop";
     }
 }

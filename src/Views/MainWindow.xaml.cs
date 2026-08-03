@@ -204,7 +204,7 @@ public partial class MainWindow : Window
     private void NavScreenshots_Click(object sender, MouseButtonEventArgs e) => ShowGalleryPage();
     private void NavRecordings_Click(object sender, MouseButtonEventArgs e) => ShowRecordingsPage();
 
-    private void ShowHomePage()
+    public void ShowHomePage()
     {
         GalleryPage.Visibility = Visibility.Collapsed;
         RecordingsPage.Visibility = Visibility.Collapsed;
@@ -297,6 +297,14 @@ public partial class MainWindow : Window
         catch (Exception ex) { MessageBox.Show(ex.Message, "Couldn't open recording", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
+    private void EditRecording_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedRecording == null || !File.Exists(_selectedRecording.FilePath)) return;
+        var editor = new VideoEditorWindow(_selectedRecording);
+        editor.Show();
+        editor.Activate();
+    }
+
     private void ShowRecordingInFolder_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedRecording == null || !File.Exists(_selectedRecording.FilePath)) return;
@@ -359,7 +367,7 @@ public partial class MainWindow : Window
         RecordingList.ItemTemplate = (DataTemplate)FindResource("RecordingRowTemplate");
     }
 
-    private void ShowGalleryPage()
+    public void ShowGalleryPage()
     {
         HomePage.Visibility = Visibility.Collapsed;
         RecordingsPage.Visibility = Visibility.Collapsed;
@@ -368,7 +376,7 @@ public partial class MainWindow : Window
         RecordingList.SelectedItem = null; // otherwise its Details panel state lingers behind the now-hidden page
     }
 
-    private void ShowRecordingsPage()
+    public void ShowRecordingsPage()
     {
         HomePage.Visibility = Visibility.Collapsed;
         GalleryPage.Visibility = Visibility.Collapsed;

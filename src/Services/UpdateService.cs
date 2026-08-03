@@ -18,6 +18,12 @@ public static class UpdateService
     private static UpdateManager? _manager;
     private static UpdateInfo? _pendingUpdate;
 
+    // Guards against the startup auto-check and a user-triggered "Check for updates…" click
+    // overlapping: both would otherwise race on the shared _manager/_pendingUpdate fields and could
+    // call DownloadUpdatesAsync concurrently against the same on-disk Velopack package cache. Same
+    // simple bool-guard pattern as CaptureController's _captureInProgress/_stoppingRecording.
+    private static bool _checking;
+
     /// <summary>Fires once a new version has finished downloading and is ready to install on restart.</summary>
     public static event Action<string>? UpdateReady;
 
@@ -27,10 +33,13 @@ public static class UpdateService
     /// Checks for, and downloads, a newer version if one exists. Returns the new version string,
     /// or null if already up to date (or the check couldn't run at all -- e.g. offline, or this is
     /// a dev build that wasn't installed via the Velopack-built setup.exe, in which case there's
-    /// nothing to update in place).
+    /// nothing to update in place). Returns null (without doing anything) if a check is already
+    /// running -- see <see cref="_checking"/>.
     /// </summary>
     public static async Task<string?> CheckForUpdatesAsync()
     {
+        if (_checking) return null;
+        _checking = true;
         try
         {
             _manager ??= new UpdateManager(new GithubSource(RepoUrl, accessToken: null, prerelease: false));
@@ -51,6 +60,10 @@ public static class UpdateService
             // Update checks are opportunistic (network down, GitHub unreachable, rate-limited,
             // running unpackaged during development, ...) -- never let one disrupt normal use.
             return null;
+        }
+        finally
+        {
+            _checking = false;
         }
     }
 

@@ -1,0 +1,114 @@
+<UserControl x:Class="SnapDoc.Views.Controls.EditorTimeline"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" mc:Ignorable="d">
+    <UserControl.Resources>
+        <Style x:Key="GutterToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="20"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource RedAccent}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="128"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Gutter: fixed, doesn't scroll/zoom with the lanes. Icon + label + a mute toggle per
+             track (Video has none: there's no "mute" concept for it). Row heights (20 spacer + 3x56)
+             match the ruler height + lane row spacing on the right exactly, so each gutter row lines
+             up with its lane. No Webcam row: webcam (if the recording has one) is already
+             permanently part of the Video track's own pixels, composited live during recording. -->
+        <Border Grid.Column="0" Background="{StaticResource CardBg}" CornerRadius="4,0,0,4" BorderBrush="{StaticResource CardBorder}" BorderThickness="1,1,0,1">
+            <StackPanel>
+                <Border Height="20"/>
+                <Grid Height="56">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                        <TextBlock Text="&#127916;" FontSize="13" Margin="0,0,7,0"/>
+                        <TextBlock Text="Video" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Grid>
+                <Grid Height="56">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                        <Ellipse Width="8" Height="8" Fill="{StaticResource GreenAccent}" Margin="0,0,7,0"/>
+                        <TextBlock Text="System" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <ToggleButton x:Name="SystemMuteToggle" Content="&#128266;" Style="{StaticResource GutterToggleStyle}"
+                                  HorizontalAlignment="Right" Margin="0,0,8,0" ToolTip="Mute System Audio" Checked="SystemMuteToggle_Changed" Unchecked="SystemMuteToggle_Changed"/>
+                </Grid>
+                <Grid Height="52">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                        <Ellipse Width="8" Height="8" Fill="{StaticResource BlueAccent}" Margin="0,0,7,0"/>
+                        <TextBlock Text="Mic" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <ToggleButton x:Name="MicMuteToggle" Content="&#128266;" Style="{StaticResource GutterToggleStyle}"
+                                  HorizontalAlignment="Right" Margin="0,0,8,0" ToolTip="Mute Mic" Checked="MicMuteToggle_Changed" Unchecked="MicMuteToggle_Changed"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Ruler + lanes: both inside one ScrollViewer so they always scroll together. Width of
+             RulerCanvas/TrackCanvas is driven explicitly from code (ApplyZoom) rather than left to
+             auto-size, since Canvas doesn't do that on its own; that's what makes "wider than the
+             viewport" (zoomed in) possible at all. -->
+        <ScrollViewer x:Name="TrackScrollViewer" Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                      SizeChanged="TrackScrollViewer_SizeChanged">
+            <StackPanel>
+                <Canvas x:Name="RulerCanvas" Height="20" Width="800" Background="Transparent" MouseLeftButtonDown="RulerCanvas_MouseLeftButtonDown"/>
+
+                <Border Background="{StaticResource CardBg}" CornerRadius="0,4,4,0" BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,1,1" ClipToBounds="True">
+                    <!-- Background="Transparent" (not left unset) is required, not cosmetic: a Canvas
+                         with no Background at all only hit-tests where a child actually renders
+                         something. An empty row (e.g. after deleting its one clip) would stop
+                         receiving MouseLeftButtonDown/DragOver/Drop entirely in the gap, since there'd
+                         be nothing under the cursor for WPF to route them to. Same reasoning as
+                         RulerCanvas's own Background="Transparent" just above. -->
+                    <Canvas x:Name="TrackCanvas" Height="164" Width="800" Background="Transparent" AllowDrop="True"
+                            MouseLeftButtonDown="TrackCanvas_MouseLeftButtonDown"
+                            MouseMove="TrackCanvas_MouseMove"
+                            MouseLeftButtonUp="TrackCanvas_MouseLeftButtonUp"
+                            DragEnter="TrackCanvas_DragOver"
+                            DragOver="TrackCanvas_DragOver"
+                            Drop="TrackCanvas_Drop">
+
+                        <!-- Row backgrounds + clip visuals, fixed layout: Video(0-52) System(56-108) Mic(112-164).
+                             Each row is repopulated with one Border per TrackClip on that track (see
+                             RedrawTrack), not a single filmstrip/waveform spanning the whole row anymore,
+                             since clips can now be trimmed/split/moved independently. -->
+                        <Canvas x:Name="VideoRow" Canvas.Top="0" Height="52"/>
+                        <Canvas x:Name="SystemRow" Canvas.Top="56" Height="52"/>
+                        <Canvas x:Name="MicRow" Canvas.Top="112" Height="52"/>
+
+                        <TextBlock x:Name="SystemUnavailableText" Canvas.Top="56" Text="System audio not captured for this recording"
+                                   Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="8,18,0,0" Visibility="Collapsed" IsHitTestVisible="False"/>
+                        <TextBlock x:Name="MicUnavailableText" Canvas.Top="112" Text="Mic not captured for this recording"
+                                   Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="8,18,0,0" Visibility="Collapsed" IsHitTestVisible="False"/>
+
+                        <Rectangle x:Name="Playhead" Width="2" Height="164" Fill="{StaticResource OrangeAccent}" IsHitTestVisible="False"/>
+                    </Canvas>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

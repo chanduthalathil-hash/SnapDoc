@@ -188,8 +188,8 @@
                         BorderThickness="0" Padding="16,8" Margin="8,0,4,0" Cursor="Hand"
                         ToolTip="Stop (Ctrl+Shift+R)" Click="StopBtn_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Rectangle Width="10" Height="10" Fill="White" Margin="0,0,7,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Stop" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Rectangle x:Name="StopBtnIcon" Width="10" Height="10" Fill="White" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="StopBtnText" Text="Stop" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </StackPanel>
                 </Button>
             </StackPanel>

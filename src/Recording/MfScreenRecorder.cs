@@ -20,16 +20,27 @@ namespace SnapDoc.Recording;
 /// (see <see cref="LogicalTimeTicks"/>) so playback speed holds even across a pause/resume.
 ///
 /// Microphone and system audio (WASAPI via <see cref="AudioCaptureMixer"/>) are captured on a
-/// second thread and muxed in as an AAC track when either is enabled. Video and audio both write
-/// to the same <see cref="IMFSinkWriter"/>, which is not documented as thread-safe, so every call
-/// into it is serialized through <see cref="_writerLock"/>.
+/// second thread and muxed in as an AAC track when either is enabled. Video and (main-track) audio
+/// both write to the same <see cref="IMFSinkWriter"/>, which is not documented as thread-safe, so
+/// every call into it is serialized through <see cref="_writerLock"/>.
 ///
-/// Webcam (<see cref="WebcamCapture"/>) is composited as a picture-in-picture overlay, blitted
-/// directly into each frame's pixel buffer before it's handed to the encoder -- plain byte copying,
-/// not a WPF Visual/RenderTargetBitmap render, since that machinery expects an STA thread and this
-/// recorder's threads don't need to be one for anything else. The capture is normally supplied by
-/// the caller (<see cref="RecordingOptions.SharedWebcamCapture"/>) rather than opened here, so the
-/// same feed can also drive a live on-screen preview for the whole recording, not just before it.
+/// Mic and system audio are ALSO each written to their own small sidecar file next to the main
+/// recording (see <see cref="ResolveSidecarPaths"/>) whenever that source is enabled --
+/// "&lt;recording&gt;.tracks/mic.m4a", "system.m4a" -- so SnapDoc's video editor can offer
+/// independent volume/mute per track after the fact. Each sidecar has exactly one thread ever
+/// writing to it (the audio thread), so unlike the shared main writer, neither needs its own lock.
+///
+/// Webcam has no sidecar of its own: it's composited into the main recording's own pixels live, one
+/// screen frame at a time (see <see cref="WriteVideoFrame"/>), at whatever position/size/visibility
+/// was current at that instant -- SetWebcamPosition/SetWebcamVisible take effect on the very next
+/// frame, which is what lets the on-screen preview stay draggable mid-recording and have that
+/// dragging show up in the actual output. The trade-off against the sidecar-track approach this
+/// used to take: baking it in live means the position can't be adjusted after the fact in the
+/// editor, but it's simpler, faster (no separate encoder thread/file, no post-record compositing
+/// pass with its own retry/finalize-timing concerns), and the recording is complete and playable
+/// the instant Stop returns -- no "processing" wait. The capture itself is normally supplied by the
+/// caller (<see cref="RecordingOptions.SharedWebcamCapture"/>) rather than opened here, so the same
+/// feed can also drive a live on-screen preview for the whole recording, not just before it.
 /// </summary>
 public sealed class MfScreenRecorder : IScreenRecorder
 {
@@ -37,7 +48,17 @@ public sealed class MfScreenRecorder : IScreenRecorder
     private readonly object _writerLock = new();
     private readonly object _pauseLock = new();
 
+    // Guards LastWebcamAnchorX/Y/SizeFraction/Visible: written from the UI thread (drag handle,
+    // mute toggle) and now read on the video thread every frame to composite the webcam live (see
+    // WriteVideoFrame) -- unlike most of this class's other cross-thread state, these four are
+    // genuinely read-live-during-recording, so a lock (not just "doesn't matter, only read after
+    // Stop") is required to avoid a torn read.
+    private readonly object _webcamPosLock = new();
+
     private IMFSinkWriter? _writer;
+    private IMFSinkWriter? _micWriter;
+    private IMFSinkWriter? _systemWriter;
+    private int _micStreamIndex, _systemStreamIndex;
     private Thread? _videoThread;
     private Thread? _audioThread;
     private volatile bool _stopRequested;
@@ -46,6 +67,13 @@ public sealed class MfScreenRecorder : IScreenRecorder
     private TaskCompletionSource<object?>? _audioStopped;
     private Exception? _fatalError;
 
+    public string? LastMicAudioPath { get; private set; }
+    public string? LastSystemAudioPath { get; private set; }
+    public double LastWebcamAnchorX { get; private set; } = 1.0;
+    public double LastWebcamAnchorY { get; private set; } = 1.0;
+    public double LastWebcamSizeFraction { get; private set; } = 0.2;
+    public bool LastWebcamVisible { get; private set; } = true;
+
     private Stopwatch? _clock;
     private TimeSpan _pausedAccumulated;
     private DateTime? _pauseStartedUtc;
@@ -53,14 +81,6 @@ public sealed class MfScreenRecorder : IScreenRecorder
     private AudioCaptureMixer? _audioMixer;
     private WebcamCapture? _webcam;
     private bool _ownsWebcam;
-    private volatile bool _webcamVisible = true;
-    private readonly object _webcamPositionLock = new(); // guards the two fields below: written from
-                                                           // the UI thread while dragging, read every
-                                                           // frame on the video thread -- double can't
-                                                           // be marked volatile, so a lock it is.
-    private double _webcamAnchorX = 1.0;
-    private double _webcamAnchorY = 1.0;
-    private double _webcamSizeFraction = 0.2;
 
     public bool IsRecording { get; private set; }
     public bool IsPaused => _paused;
@@ -129,14 +149,41 @@ public sealed class MfScreenRecorder : IScreenRecorder
             throw;
         }
 
+        var (micPath, systemPath) = ResolveSidecarPaths(outputMp4Path,
+            needMic: mixer != null && options.CaptureMicrophone,
+            needSystem: mixer != null && options.CaptureSystemAudio);
+
+        IMFSinkWriter? micWriter = null, systemWriter = null;
+        int micStream = -1, systemStream = -1;
+        try
+        {
+            if (micPath != null) micWriter = CreateAudioOnlySinkWriter(micPath, mixer!.SampleRate, mixer.Channels, out micStream);
+            if (systemPath != null) systemWriter = CreateAudioOnlySinkWriter(systemPath, mixer!.SampleRate, mixer.Channels, out systemStream);
+        }
+        catch
+        {
+            // A sidecar failing to set up shouldn't take down the main recording -- drop just that
+            // one track rather than throwing, since the user still gets everything else.
+            micWriter?.Dispose(); systemWriter?.Dispose();
+            micWriter = systemWriter = null;
+            micPath = systemPath = null;
+        }
+
         _writer = writer;
+        _micWriter = micWriter; _micStreamIndex = micStream;
+        _systemWriter = systemWriter; _systemStreamIndex = systemStream;
+        LastMicAudioPath = micWriter != null ? micPath : null;
+        LastSystemAudioPath = systemWriter != null ? systemPath : null;
         _audioMixer = mixer;
         _webcam = webcam;
         _ownsWebcam = ownsWebcam;
-        _webcamVisible = true;
-        _webcamAnchorX = Math.Clamp(options.WebcamAnchorX, 0, 1);
-        _webcamAnchorY = Math.Clamp(options.WebcamAnchorY, 0, 1);
-        _webcamSizeFraction = Math.Clamp(options.WebcamSizeFraction, 0.08, 0.5);
+        lock (_webcamPosLock)
+        {
+            LastWebcamVisible = true;
+            LastWebcamAnchorX = Math.Clamp(options.WebcamAnchorX, 0, 1);
+            LastWebcamAnchorY = Math.Clamp(options.WebcamAnchorY, 0, 1);
+            LastWebcamSizeFraction = Math.Clamp(options.WebcamSizeFraction, 0.08, 0.5);
+        }
         _clock = Stopwatch.StartNew();
         _pausedAccumulated = TimeSpan.Zero;
         _pauseStartedUtc = null;
@@ -158,7 +205,7 @@ public sealed class MfScreenRecorder : IScreenRecorder
 
         if (mixer != null && audioStream >= 0)
         {
-            _audioThread = new Thread(() => RunAudioLoop(writer, audioStream, mixer))
+            _audioThread = new Thread(() => RunAudioLoop(writer, audioStream, mixer, micWriter, micStream, systemWriter, systemStream))
             { IsBackground = true, Name = "SnapDoc Recorder (audio)" };
             _audioThread.Start();
         }
@@ -166,16 +213,39 @@ public sealed class MfScreenRecorder : IScreenRecorder
         return Task.CompletedTask;
     }
 
+    /// <summary>Where sidecar tracks for this recording live, one folder per recording so a plain
+    /// (non-recursive) "*.mp4" scan of the workspace folder -- see WorkspaceService -- never picks
+    /// them up as bogus top-level entries. Null for whichever source isn't needed.</summary>
+    private static (string? Mic, string? System) ResolveSidecarPaths(
+        string outputMp4Path, bool needMic, bool needSystem)
+    {
+        if (!needMic && !needSystem) return (null, null);
+
+        string dir = Path.GetDirectoryName(outputMp4Path)!;
+        string baseName = Path.GetFileNameWithoutExtension(outputMp4Path);
+        string tracksDir = Path.Combine(dir, baseName + ".tracks");
+        Directory.CreateDirectory(tracksDir);
+
+        return (
+            needMic ? Path.Combine(tracksDir, "mic.m4a") : null,
+            needSystem ? Path.Combine(tracksDir, "system.m4a") : null);
+    }
+
     public void SetMicrophoneMuted(bool muted) { if (_audioMixer != null) _audioMixer.MicMuted = muted; }
     public void SetSystemAudioMuted(bool muted) { if (_audioMixer != null) _audioMixer.SystemMuted = muted; }
-    public void SetWebcamVisible(bool visible) => _webcamVisible = visible;
+
+    // Webcam IS baked live into the main recording's pixels now (see class doc) -- these take effect
+    // on the very next frame WriteVideoFrame composites, which is what lets the on-screen preview
+    // stay draggable/toggleable mid-recording and have that actually show up in the output. Guarded
+    // by _webcamPosLock since the video thread now reads these every frame.
+    public void SetWebcamVisible(bool visible) { lock (_webcamPosLock) LastWebcamVisible = visible; }
 
     public void SetWebcamPosition(double anchorX, double anchorY)
     {
-        lock (_webcamPositionLock)
+        lock (_webcamPosLock)
         {
-            _webcamAnchorX = Math.Clamp(anchorX, 0, 1);
-            _webcamAnchorY = Math.Clamp(anchorY, 0, 1);
+            LastWebcamAnchorX = Math.Clamp(anchorX, 0, 1);
+            LastWebcamAnchorY = Math.Clamp(anchorY, 0, 1);
         }
     }
 
@@ -219,6 +289,12 @@ public sealed class MfScreenRecorder : IScreenRecorder
             _writer = null;
         }
 
+        // Each sidecar writer has exactly one thread that was ever writing to it, and that thread
+        // has already confirmed (above) it's done -- no lock needed here, same reasoning as why
+        // RunAudioLoop doesn't take one either.
+        FinalizeSidecarWriter(ref _micWriter);
+        FinalizeSidecarWriter(ref _systemWriter);
+
         _audioMixer?.Stop();
         _audioMixer?.Dispose();
         _audioMixer = null;
@@ -233,6 +309,14 @@ public sealed class MfScreenRecorder : IScreenRecorder
         var error = _fatalError;
         _fatalError = null;
         if (error != null) throw error;
+    }
+
+    private void FinalizeSidecarWriter(ref IMFSinkWriter? writer)
+    {
+        if (writer == null) return;
+        try { writer.Finalize(); } catch (Exception ex) { _fatalError ??= ex; }
+        try { writer.Dispose(); } catch { /* already in a failure/shutdown path */ }
+        writer = null;
     }
 
     /// <summary>The recording's own timeline: real elapsed time minus however long it's spent
@@ -320,6 +404,41 @@ public sealed class MfScreenRecorder : IScreenRecorder
     private static int EstimateVideoBitrate(int width, int height, int fps) =>
         Math.Clamp((int)(width * height * fps * 0.1), 500_000, 8_000_000);
 
+    /// <summary>A standalone single-audio-stream sink writer for a mic/system sidecar -- same
+    /// PCM-in/AAC-out shape as the audio half of <see cref="CreateSinkWriter"/>, just its own file
+    /// instead of a second stream muxed into the main one (SinkWriter can only target one URL).</summary>
+    private static IMFSinkWriter CreateAudioOnlySinkWriter(string outputPath, int sampleRate, int channels, out int streamIndex)
+    {
+        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
+        sinkAttrs.Set(SinkWriterAttributeKeys.DisableThrottling, true).CheckError();
+        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
+        var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
+
+        var outType = MediaFactory.MFCreateMediaType();
+        var outAttrs = (IMFAttributes)outType;
+        outAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio).CheckError();
+        outAttrs.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Aac).CheckError();
+        outAttrs.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, (uint)sampleRate).CheckError();
+        outAttrs.Set(MediaTypeAttributeKeys.AudioNumChannels, (uint)channels).CheckError();
+        outAttrs.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, (uint)(128_000 / 8)).CheckError();
+        outAttrs.Set(MediaTypeAttributeKeys.AudioBitsPerSample, (uint)16).CheckError();
+        streamIndex = writer.AddStream(outType);
+
+        var inType = MediaFactory.MFCreateMediaType();
+        var inAttrs = (IMFAttributes)inType;
+        inAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Pcm).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, (uint)sampleRate).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.AudioNumChannels, (uint)channels).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.AudioBitsPerSample, (uint)16).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.AudioBlockAlignment, (uint)(2 * channels)).CheckError();
+        inAttrs.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, (uint)(sampleRate * 2 * channels)).CheckError();
+        writer.SetInputMediaType(streamIndex, inType, null);
+
+        writer.BeginWriting();
+        return writer;
+    }
+
     private void RunVideoLoop(IMFSinkWriter writer, int streamIndex, Int32Rect region, int width, int height, int fps, bool drawCursor)
     {
         int stride = width * 4;
@@ -374,18 +493,7 @@ public sealed class MfScreenRecorder : IScreenRecorder
             try
             {
                 converted.CopyPixels(new Int32Rect(0, 0, converted.PixelWidth, converted.PixelHeight), ptr, bufferSize, stride);
-
-                if (_webcam != null && _webcamVisible)
-                {
-                    var camFrame = _webcam.TryGetLatestFrame();
-                    if (camFrame is { } cam)
-                    {
-                        double anchorX, anchorY;
-                        lock (_webcamPositionLock) { anchorX = _webcamAnchorX; anchorY = _webcamAnchorY; }
-                        CompositeWebcamOverlay(ptr, stride, width, height, cam.Bytes, cam.Width, cam.Height,
-                            anchorX, anchorY, _webcamSizeFraction);
-                    }
-                }
+                CompositeWebcamLive(ptr, stride, width, height);
             }
             finally { buffer.Unlock(); }
             buffer.CurrentLength = bufferSize;
@@ -402,58 +510,27 @@ public sealed class MfScreenRecorder : IScreenRecorder
         }
     }
 
-    // Picture-in-picture: nearest-neighbour scale the webcam frame into a box sized/positioned per
-    // the toolbar's settings, and blit it straight into the already-copied screen pixels, with a
-    // plain white border. Plain byte-buffer math (not a WPF DrawingVisual/RenderTargetBitmap
-    // render) deliberately -- that machinery needs an STA thread, and neither the video nor audio
-    // thread here has a reason to be one otherwise.
-    private static void CompositeWebcamOverlay(nint screenPtr, int screenStride, int screenWidth, int screenHeight,
-        byte[] camBgr32, int camWidth, int camHeight, double anchorX, double anchorY, double sizeFraction)
+    /// <summary>Blits the webcam's latest decoded frame onto a just-captured screen frame, in place,
+    /// before it's ever encoded -- this is what "baked in live" means: by the time WriteVideoFrame's
+    /// sample reaches the SinkWriter, the webcam is already part of its pixels, permanently. No-op if
+    /// webcam wasn't enabled, is toggled off (<see cref="LastWebcamVisible"/>), or genuinely has no
+    /// frame yet (camera still warming up right after Start).</summary>
+    private void CompositeWebcamLive(nint screenPtr, int stride, int width, int height)
     {
-        if (camWidth <= 0 || camHeight <= 0) return;
+        if (_webcam == null) return;
 
-        const int BorderPx = 2;
-        int pipWidth = Math.Clamp((int)(screenWidth * sizeFraction), 80, screenWidth - 20);
-        int pipHeight = Math.Clamp(pipWidth * camHeight / camWidth, 1, Math.Max(1, screenHeight - 20));
-        int margin = Math.Max(12, screenWidth / 100);
-
-        // anchorX/Y (0..1) place the box's top-left anywhere within the margin-inset area, same
-        // convention as WebcamPositionPicker uses when the user drags it there by hand.
-        int minX = margin, maxX = Math.Max(minX, screenWidth - pipWidth - margin);
-        int minY = margin, maxY = Math.Max(minY, screenHeight - pipHeight - margin);
-        int pipX = minX + (int)((maxX - minX) * Math.Clamp(anchorX, 0, 1));
-        int pipY = minY + (int)((maxY - minY) * Math.Clamp(anchorY, 0, 1));
-
-        int camStride = camWidth * 4;
-        var rowBuffer = new byte[pipWidth * 4];
-
-        for (int y = 0; y < pipHeight; y++)
+        double anchorX, anchorY, sizeFraction; bool visible;
+        lock (_webcamPosLock)
         {
-            bool horizontalBorder = y < BorderPx || y >= pipHeight - BorderPx;
-            int srcY = Math.Min(camHeight - 1, y * camHeight / pipHeight);
-            int srcRowStart = srcY * camStride;
-
-            for (int x = 0; x < pipWidth; x++)
-            {
-                int dstOffset = x * 4;
-                if (horizontalBorder || x < BorderPx || x >= pipWidth - BorderPx)
-                {
-                    rowBuffer[dstOffset] = 255; rowBuffer[dstOffset + 1] = 255;
-                    rowBuffer[dstOffset + 2] = 255; rowBuffer[dstOffset + 3] = 255;
-                }
-                else
-                {
-                    int srcOffset = srcRowStart + Math.Min(camWidth - 1, x * camWidth / pipWidth) * 4;
-                    rowBuffer[dstOffset] = camBgr32[srcOffset];
-                    rowBuffer[dstOffset + 1] = camBgr32[srcOffset + 1];
-                    rowBuffer[dstOffset + 2] = camBgr32[srcOffset + 2];
-                    rowBuffer[dstOffset + 3] = 255;
-                }
-            }
-
-            nint destRowPtr = screenPtr + (pipY + y) * screenStride + pipX * 4;
-            Marshal.Copy(rowBuffer, 0, destRowPtr, rowBuffer.Length);
+            visible = LastWebcamVisible;
+            anchorX = LastWebcamAnchorX; anchorY = LastWebcamAnchorY; sizeFraction = LastWebcamSizeFraction;
         }
+        if (!visible) return;
+
+        var frame = _webcam.TryGetLatestFrame();
+        if (frame is not { } f) return;
+
+        WebcamCompositor.Composite(screenPtr, stride, width, height, f.Bytes, f.Width, f.Height, anchorX, anchorY, sizeFraction);
     }
 
     /// <summary>
@@ -467,7 +544,8 @@ public sealed class MfScreenRecorder : IScreenRecorder
     /// (the same clock the video loop timestamps against) keeps the two loops' notions of "how
     /// much time has actually passed" identical, so nothing can accumulate.
     /// </summary>
-    private void RunAudioLoop(IMFSinkWriter writer, int streamIndex, AudioCaptureMixer mixer)
+    private void RunAudioLoop(IMFSinkWriter writer, int streamIndex, AudioCaptureMixer mixer,
+        IMFSinkWriter? micWriter, int micStreamIndex, IMFSinkWriter? systemWriter, int systemStreamIndex)
     {
         int bytesPerSecond = mixer.SampleRate * mixer.Channels * 2; // 16-bit PCM
         int frameSize = 2 * mixer.Channels; // one sample per channel; keep reads frame-aligned
@@ -487,15 +565,22 @@ public sealed class MfScreenRecorder : IScreenRecorder
                 neededBytes -= neededBytes % frameSize;
                 if (neededBytes <= 0) { Thread.Sleep(5); continue; }
 
-                byte[] chunk;
-                try { chunk = mixer.ReadMixedPcm16(neededBytes); }
-                catch { chunk = Array.Empty<byte>(); continue; } // a device hiccup shouldn't kill the
-                                                                   // recording -- retry next tick rather
-                                                                   // than advancing audioTimeWritten
-                                                                   // without having written anything.
+                byte[] mixedChunk, micChunk, systemChunk;
+                try
+                {
+                    var (mixed, mic, system) = mixer.ReadAllPcm16(neededBytes);
+                    mixedChunk = mixed;
+                    micChunk = mic ?? Array.Empty<byte>();
+                    systemChunk = system ?? Array.Empty<byte>();
+                }
+                catch { continue; } // a device hiccup shouldn't kill the recording -- retry next tick
+                                     // rather than advancing audioTimeWritten without having written
+                                     // anything.
 
-                WriteAudioChunk(writer, streamIndex, chunk, bytesPerSecond, audioTimeWritten);
-                audioTimeWritten += (long)(chunk.Length / (double)bytesPerSecond * TimeSpan.TicksPerSecond);
+                WriteAudioChunk(writer, streamIndex, mixedChunk, bytesPerSecond, audioTimeWritten);
+                if (micWriter != null) WriteAudioChunk(micWriter, micStreamIndex, micChunk, bytesPerSecond, audioTimeWritten, needsLock: false);
+                if (systemWriter != null) WriteAudioChunk(systemWriter, systemStreamIndex, systemChunk, bytesPerSecond, audioTimeWritten, needsLock: false);
+                audioTimeWritten += (long)(mixedChunk.Length / (double)bytesPerSecond * TimeSpan.TicksPerSecond);
             }
         }
         catch (Exception ex)
@@ -508,7 +593,10 @@ public sealed class MfScreenRecorder : IScreenRecorder
         }
     }
 
-    private void WriteAudioChunk(IMFSinkWriter writer, int streamIndex, byte[] chunk, int bytesPerSecond, long sampleTime)
+    // needsLock: true only for the main writer, which the video thread also writes to concurrently
+    // -- the mic/system sidecar writers are only ever touched from this one (audio) thread, so
+    // locking those too would just be pointless contention against the main writer's lock.
+    private void WriteAudioChunk(IMFSinkWriter writer, int streamIndex, byte[] chunk, int bytesPerSecond, long sampleTime, bool needsLock = true)
     {
         long durationTicks = (long)(chunk.Length / (double)bytesPerSecond * 10_000_000L);
         if (durationTicks <= 0) return;
@@ -525,7 +613,8 @@ public sealed class MfScreenRecorder : IScreenRecorder
             sample.AddBuffer(buffer);
             sample.SampleTime = sampleTime;
             sample.SampleDuration = durationTicks;
-            lock (_writerLock) writer.WriteSample(streamIndex, sample);
+            if (needsLock) lock (_writerLock) writer.WriteSample(streamIndex, sample);
+            else writer.WriteSample(streamIndex, sample);
         }
         finally
         {

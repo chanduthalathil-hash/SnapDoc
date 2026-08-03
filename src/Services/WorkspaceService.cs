@@ -69,7 +69,9 @@ public sealed class WorkspaceService
     /// <summary>Same idea as <see cref="LoadExisting"/> but for recordings: rebuild the list from
     /// MP4s already in the workspace folder. A reloaded recording's <see cref="RecordingClip.Duration"/>
     /// is left null (its length isn't probed from the file) -- only recordings made this session
-    /// know their own duration.</summary>
+    /// know their own duration. <see cref="Directory.GetFiles"/> is non-recursive, so a recording's
+    /// own sidecar folder (see <see cref="FindSidecarPaths"/>) never shows up here as a bogus
+    /// second entry.</summary>
     private void LoadExistingRecordings()
     {
         string[] files;
@@ -78,32 +80,66 @@ public sealed class WorkspaceService
 
         foreach (var path in files.OrderByDescending(File.GetLastWriteTime))
         {
+            var (mic, system) = FindSidecarPaths(path);
             Recordings.Add(new RecordingClip
             {
                 FilePath = path,
                 Title = Path.GetFileNameWithoutExtension(path),
                 CreatedAt = File.GetLastWriteTime(path),
+                MicAudioPath = mic,
+                SystemAudioPath = system,
             });
         }
+    }
+
+    /// <summary>Looks for the "&lt;basename&gt;.tracks/{mic.m4a,system.m4a}" sidecar files
+    /// MfScreenRecorder writes next to a recording. A recording reloaded from disk has no other
+    /// record of which sources were enabled, so "the expected file exists" is the only signal
+    /// available -- same spirit as how captures/recordings are discovered at all (see class doc: the
+    /// folder itself is the persistence, there's no separate index). Webcam has no sidecar of its
+    /// own -- it's composited live into the main file's own pixels during recording (see
+    /// MfScreenRecorder's class doc), so there's nothing to look for.</summary>
+    private static (string? Mic, string? System) FindSidecarPaths(string mp4Path)
+    {
+        string tracksDir = Path.Combine(Path.GetDirectoryName(mp4Path)!, Path.GetFileNameWithoutExtension(mp4Path) + ".tracks");
+        if (!Directory.Exists(tracksDir)) return (null, null);
+
+        string mic = Path.Combine(tracksDir, "mic.m4a");
+        string system = Path.Combine(tracksDir, "system.m4a");
+        return (File.Exists(mic) ? mic : null, File.Exists(system) ? system : null);
     }
 
     public void Add(Capture capture) => Captures.Insert(0, capture); // newest first
 
     /// <summary>Register a finished recording (already saved to <paramref name="filePath"/> by the
     /// recorder itself) in the workspace list.</summary>
-    public void AddRecording(string filePath, TimeSpan? duration) => Recordings.Insert(0, new RecordingClip
+    public RecordingClip AddRecording(string filePath, TimeSpan? duration,
+        string? micAudioPath = null, string? systemAudioPath = null)
     {
-        FilePath = filePath,
-        Title = Path.GetFileNameWithoutExtension(filePath),
-        Duration = duration,
-    });
+        var clip = new RecordingClip
+        {
+            FilePath = filePath,
+            Title = Path.GetFileNameWithoutExtension(filePath),
+            Duration = duration,
+            MicAudioPath = micAudioPath,
+            SystemAudioPath = systemAudioPath,
+        };
+        Recordings.Insert(0, clip);
+        return clip;
+    }
 
-    /// <summary>Remove a recording from the workspace and delete its MP4 from disk.</summary>
+    /// <summary>Remove a recording from the workspace and delete its MP4 -- and, if it has one, its
+    /// ".tracks" sidecar folder -- from disk.</summary>
     public void DeleteRecording(RecordingClip recording)
     {
         Recordings.Remove(recording);
         try { if (File.Exists(recording.FilePath)) File.Delete(recording.FilePath); }
         catch { /* file may be locked/already gone; the workspace entry is still removed */ }
+
+        string tracksDir = Path.Combine(Path.GetDirectoryName(recording.FilePath)!,
+            Path.GetFileNameWithoutExtension(recording.FilePath) + ".tracks");
+        try { if (Directory.Exists(tracksDir)) Directory.Delete(tracksDir, recursive: true); }
+        catch { /* same best-effort reasoning as the MP4 delete above */ }
     }
 
     /// <summary>Remove a capture from the workspace and delete its saved PNG from disk.</summary>
