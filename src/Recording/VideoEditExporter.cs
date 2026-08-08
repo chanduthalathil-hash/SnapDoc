@@ -601,8 +601,17 @@ public static class VideoEditExporter
     private static (IMFSinkWriter writer, int videoStream, int audioStream) CreateSinkWriter(
         string outputPath, int width, int height, int fps, int? audioSampleRate, int? audioChannels, double qualityMultiplier = 1.0)
     {
-        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
-        sinkAttrs.Set(SinkWriterAttributeKeys.DisableThrottling, true).CheckError();
+        // DisableThrottling used to be set here -- it tells the SinkWriter to let WriteSample
+        // return immediately instead of blocking/pacing to match how fast the encoder can actually
+        // drain samples. Our decode loop feeds it frames much faster than realtime, and with nothing
+        // throttling the producer, every WriteSample call's sample+native buffer piles up in the
+        // SinkWriter's own internal queue rather than being freed once written -- invisible to the
+        // managed heap (crash.log confirmed this: 41MB managed heap next to 27GB of process private
+        // bytes at the moment of failure, dead a minute into an 8-minute export). Leaving throttling
+        // at its default (enabled) makes WriteSample block until the encoder has caught up, which
+        // bounds that queue -- slower wall-clock export time, but memory that stays flat instead of
+        // climbing without bound.
+        var sinkAttrs = MediaFactory.MFCreateAttributes(1);
         sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
         var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
 

@@ -340,8 +340,14 @@ public sealed class MfScreenRecorder : IScreenRecorder
     {
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
-        sinkAttrs.Set(SinkWriterAttributeKeys.DisableThrottling, true).CheckError();
+        // No DisableThrottling here -- see VideoEditExporter.CreateSinkWriter's comment. Live capture
+        // is normally paced by real time anyway, but if the encoder ever falls behind (a slow
+        // machine, a heavy webcam-compositing frame, a CPU hitch), an unthrottled writer would let
+        // WriteSample calls pile up their own native sample buffers in its internal queue instead of
+        // applying backpressure -- exactly the mechanism confirmed causing export's OOM. Leaving
+        // throttling at its default means a slow encoder here shows up as capture slowing down to
+        // match it, not memory climbing without bound.
+        var sinkAttrs = MediaFactory.MFCreateAttributes(1);
         sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
 
         var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
@@ -409,8 +415,8 @@ public sealed class MfScreenRecorder : IScreenRecorder
     /// instead of a second stream muxed into the main one (SinkWriter can only target one URL).</summary>
     private static IMFSinkWriter CreateAudioOnlySinkWriter(string outputPath, int sampleRate, int channels, out int streamIndex)
     {
-        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
-        sinkAttrs.Set(SinkWriterAttributeKeys.DisableThrottling, true).CheckError();
+        // See CreateSinkWriter above -- same reasoning, no DisableThrottling.
+        var sinkAttrs = MediaFactory.MFCreateAttributes(1);
         sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
         var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
 
