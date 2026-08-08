@@ -161,6 +161,8 @@
                     </Popup>
 
                     <TextBlock x:Name="StatusText" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="12,0"/>
+                    <Button x:Name="CancelExportBtn" Content="Cancel" Click="CancelExport_Click" Padding="16,7" Margin="0,0,8,0"
+                            Style="{StaticResource FlatDarkButtonStyle}" Visibility="Collapsed"/>
                     <Button x:Name="ExportBtn" Content="Export…" Click="Export_Click" Padding="16,7"
                             Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0"/>
                 </StackPanel>

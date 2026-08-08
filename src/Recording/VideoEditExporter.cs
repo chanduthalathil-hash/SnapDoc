@@ -101,6 +101,22 @@ public static class VideoEditExporter
         finally { reader.Dispose(); }
     }
 
+    private static bool IsPlainUneditedExport(VideoEditPlan plan)
+    {
+        if (plan.VideoClips.Count != 1 || plan.SystemClips.Count > 0 || plan.MicClips.Count > 0) return false;
+        var clip = plan.VideoClips[0];
+        if (clip.SourceIn != TimeSpan.Zero || clip.TimelineStart != TimeSpan.Zero) return false;
+        if (Math.Abs(plan.SpeedFactor - 1.0) > 0.0001) return false;
+        if (plan.Brightness != 0 || plan.Contrast != 0 || plan.Saturation != 0 || plan.Grayscale) return false;
+        if (Math.Abs(plan.QualityMultiplier - 1.0) > 0.0001) return false;
+        if (Math.Abs(plan.MasterVolume - 1.0) > 0.0001) return false;
+
+        TimeSpan sourceDuration;
+        try { sourceDuration = ProbeAudioDuration(plan.SourcePath); } // generic presentation-duration read -- works for video too, not audio-specific despite the name (its other caller is EditorTimeline's audio-import drag-and-drop)
+        catch { return false; } // can't confirm the clip spans the whole file -- don't risk a wrong fast-path decision
+        return Math.Abs((clip.SourceOut - sourceDuration).Ticks) < TimeSpan.FromMilliseconds(50).Ticks;
+    }
+
     public static void Export(VideoEditPlan plan, IProgress<double>? progress, TimeSpan masterDuration, CancellationToken ct)
     {
         MediaFoundationBootstrap.EnsureStarted();
@@ -112,6 +128,24 @@ public static class VideoEditExporter
             $"Starting export of '{plan.SourcePath}' -> '{plan.OutputPath}'. " +
             $"Process: {(Environment.Is64BitProcess ? "64-bit" : "32-BIT")} (IntPtr.Size={IntPtr.Size}), " +
             $"OS: {(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}.");
+
+        // A plan with exactly one video clip spanning the WHOLE original file, no separate audio
+        // sidecars, and every adjustment left at its default is "export with no edits" -- the output
+        // is exactly the source file. Skipping the entire decode/re-encode pipeline turns that from
+        // "however long a full re-encode takes" into "however long a file copy takes". Deliberately
+        // excludes a recording that DOES have System/Mic sidecars even at default settings: whether
+        // the main file's own baked-in audio is guaranteed byte-identical to freshly re-mixing those
+        // sidecars at 100%/100% isn't verified, and a silently-wrong fast path would be worse than a
+        // slow-but-correct export.
+        if (IsPlainUneditedExport(plan))
+        {
+            ct.ThrowIfCancellationRequested();
+            CrashLogger.Log("VideoExport", "Plan has no edits and no separate audio tracks -- copying the source file directly instead of re-encoding.");
+            Directory.CreateDirectory(Path.GetDirectoryName(plan.OutputPath)!);
+            File.Copy(plan.SourcePath, plan.OutputPath, overwrite: true);
+            progress?.Report(1.0);
+            return;
+        }
 
         var (width, height, fps) = ProbeVideoFormat(plan.SourcePath);
 
@@ -664,17 +698,23 @@ public static class VideoEditExporter
         // at its default (enabled) makes WriteSample block until the encoder has caught up, which
         // bounds that queue -- slower wall-clock export time, but memory that stays flat instead of
         // climbing without bound.
-        // ReadwriteEnableHardwareTransforms used to be true, letting the SinkWriter pick a
-        // GPU/driver H.264 encoder MFT over the software one. With throttling now correctly applied
-        // (see above), a report of export crawling for hours on a 6-minute recording pointed at the
-        // same root: WriteSample now blocks on whatever encoder got chosen, and a hardware MFT that's
-        // absent/broken/falling back badly for this driver would show up as exactly that -- near-total
-        // stall -- instead of the unthrottled runaway queue it used to hide behind. The bundled
-        // software H.264 encoder is slower per-frame on capable hardware, but it's the same MFT on
-        // every machine regardless of GPU/driver, which is worth far more than hardware's speed upside
-        // for a tool that has to just work on whatever the user has installed.
-        var sinkAttrs = MediaFactory.MFCreateAttributes(1);
-        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, false).CheckError();
+        // ReadwriteEnableHardwareTransforms was briefly forced false (a guess that a broken hardware
+        // encoder explained a report of export crawling for hours), but field data disproved that:
+        // with hardware OFF, a 6-minute export still ran at ~0.8 fps (would take ~3.75 hours) AND
+        // still climbed to 7GB+ private bytes after only 100 frames -- i.e. disabling hardware fixed
+        // neither the slowness nor the memory growth, so it wasn't hardware-vs-software that mattered.
+        // Reverted to letting hardware transforms be used when available (MF falls back to software
+        // automatically if none is registered, so this is never worse than the forced-off state, only
+        // potentially faster).
+        //
+        // LowLatency is new: it tells the encoder to minimize internal frame buffering/lookahead
+        // rather than optimizing purely for compression efficiency. Both the still-slow throughput and
+        // the still-growing memory (present with hardware ON *and* OFF) are consistent with the
+        // encoder holding a growing number of frames internally before it can finalize/emit earlier
+        // ones -- exactly what LowLatency exists to bound, independent of which encoder MFT is chosen.
+        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
+        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
+        sinkAttrs.Set(SinkWriterAttributeKeys.LowLatency, true).CheckError();
         var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
 
         var outType = MediaFactory.MFCreateMediaType();

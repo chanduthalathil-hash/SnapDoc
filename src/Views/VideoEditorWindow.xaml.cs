@@ -39,6 +39,10 @@ public partial class VideoEditorWindow : Window
     private bool _isFullscreen;
     private int _fps = 30; // overwritten once ProbeFps resolves; a reasonable guess for stepping in the meantime
     private CancellationTokenSource? _exportCts;
+    private DateTime _lastExportProgressUtc;
+    private Stopwatch? _exportStopwatch;
+    private bool _exportWatchdogTimedOut;
+    private readonly DispatcherTimer _exportWatchdog = new() { Interval = TimeSpan.FromSeconds(5) };
 
     // Master-timeline playback clock: Preview.Position alone can't drive it once the video track has
     // more than one clip (trim/split/move can make it gapped or non-contiguous) -- see PositionTimer_Tick.
@@ -787,11 +791,36 @@ public partial class VideoEditorWindow : Window
         };
 
         ExportBtn.IsEnabled = false;
+        CancelExportBtn.Visibility = Visibility.Visible;
+        CancelExportBtn.IsEnabled = true;
         ExportProgress.Visibility = Visibility.Visible;
         ExportProgress.Value = 0;
         StatusText.Text = "Exporting…";
         _exportCts = new CancellationTokenSource();
-        var progress = new Progress<double>(p => ExportProgress.Value = p * 100);
+        _exportStopwatch = Stopwatch.StartNew();
+        _lastExportProgressUtc = DateTime.UtcNow;
+        _exportWatchdogTimedOut = false;
+
+        var progress = new Progress<double>(p =>
+        {
+            _lastExportProgressUtc = DateTime.UtcNow;
+            ExportProgress.Value = p * 100;
+            // A slow-but-alive export (see VideoEditExporter's per-frame throughput logging) can sit
+            // at a fraction of a percent for minutes at a time -- "Exporting… 1%" with an elapsed
+            // clock at least shows it's doing something, instead of static text that's indistinguishable
+            // from a genuine hang until the watchdog below fires or the user gives up waiting.
+            StatusText.Text = p > 0.001
+                ? $"Exporting… {p * 100:0.0}% ({_exportStopwatch!.Elapsed:mm\\:ss} elapsed)"
+                : $"Exporting… ({_exportStopwatch!.Elapsed:mm\\:ss} elapsed)";
+        });
+
+        // Distinguishes "slow but alive" from "actually stuck" the way frame-by-frame progress alone
+        // can't -- a WriteSample/ReadSample call that never returns wouldn't trip CancellationToken
+        // checks either (MF doesn't observe .NET tokens inside a single native call), so this can't
+        // forcibly interrupt one already in flight, but it does mean a genuine stall is reported
+        // within seconds of the threshold instead of the user waiting indefinitely on a frozen dialog.
+        _exportWatchdog.Tick += ExportWatchdog_Tick;
+        _exportWatchdog.Start();
 
         var masterDuration = Timeline.Duration;
 
@@ -812,7 +841,17 @@ public partial class VideoEditorWindow : Window
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = "Cancelled";
+            StatusText.Text = _exportWatchdogTimedOut ? "" : "Cancelled";
+            if (_exportWatchdogTimedOut)
+            {
+                CrashLogger.Log("VideoExport",
+                    $"Export watchdog timeout for '{_clip.FilePath}' -> '{outputPath}': no progress for 60+ seconds.");
+                MessageBox.Show(this,
+                    "Export timed out -- no progress for 60 seconds, so it was stopped rather than left waiting " +
+                    "indefinitely. This usually means the encoder is stuck; try again, and if it keeps happening " +
+                    "please share the SnapDoc log (Overflow menu) so this can be tracked down.",
+                    "SnapDoc", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
             try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { /* best effort cleanup */ }
         }
         catch (Exception ex)
@@ -832,12 +871,30 @@ public partial class VideoEditorWindow : Window
         }
         finally
         {
+            _exportWatchdog.Stop();
+            _exportWatchdog.Tick -= ExportWatchdog_Tick;
+            _exportStopwatch = null;
             ExportBtn.IsEnabled = true;
+            CancelExportBtn.Visibility = Visibility.Collapsed;
             ExportProgress.Visibility = Visibility.Collapsed;
             _exportCts.Dispose();
             _exportCts = null;
             Timeline.RestoreContentCaches();
         }
+    }
+
+    private void CancelExport_Click(object sender, RoutedEventArgs e)
+    {
+        StatusText.Text = "Cancelling…";
+        CancelExportBtn.IsEnabled = false;
+        _exportCts?.Cancel();
+    }
+
+    private void ExportWatchdog_Tick(object? sender, EventArgs e)
+    {
+        if ((DateTime.UtcNow - _lastExportProgressUtc).TotalSeconds < 60) return;
+        _exportWatchdogTimedOut = true;
+        _exportCts?.Cancel();
     }
 
     private static bool IsOutOfMemory(Exception ex) =>
