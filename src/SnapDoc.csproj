@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>SnapDoc</AssemblyName>
     <RootNamespace>SnapDoc</RootNamespace>
-    <Version>0.2.21</Version>
+    <Version>0.2.22</Version>
     <LangVersion>latest</LangVersion>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- WPF's SDK normally auto-generates Main() from App.xaml's ApplicationDefinition item and

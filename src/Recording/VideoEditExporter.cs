@@ -176,6 +176,20 @@ public static class VideoEditExporter
         long outputCursor = 0; // next un-filled output tick (pre-speed), advances as clips/gaps are written
         int frameIndex = 0;
 
+        // Encoder throughput has no dedicated diagnostic today -- a "stuck" export (WriteSample
+        // blocking on a struggling/broken encoder MFT, e.g. a bad hardware transform) looks
+        // identical to a healthy slow one from the outside until a user gives up waiting. Logging a
+        // running fps figure every so often means the next report of "it's just sitting there" comes
+        // with real throughput numbers instead of another guess.
+        var exportStopwatch = Stopwatch.StartNew();
+        void MaybeLogThroughput()
+        {
+            if (frameIndex == 0 || frameIndex % 300 != 0) return;
+            double fps2 = frameIndex / Math.Max(0.001, exportStopwatch.Elapsed.TotalSeconds);
+            CrashLogger.Log("VideoExportProgress",
+                $"{frameIndex} frames written in {exportStopwatch.Elapsed:mm\\:ss} (~{fps2:0.0} fps effective encode rate).");
+        }
+
         // One reusable scratch buffer for the whole export instead of `new byte[bufferSize]` per
         // frame: bufferSize is a full raw BGRA32 frame (~8MB at 1080p), well over the LOH threshold
         // (85,000 bytes), so allocating one per frame -- thousands of times for a multi-minute
@@ -260,6 +274,7 @@ public static class VideoEditExporter
                         }
                         outputCursor = outputTicks + frameDurTicks;
                         frameIndex++;
+                        MaybeLogThroughput();
 
                         if (masterTicks > 0) progress?.Report(Math.Clamp(outputTicks / (double)masterTicks * 0.85, 0, 0.85));
                     }
@@ -611,8 +626,17 @@ public static class VideoEditExporter
         // at its default (enabled) makes WriteSample block until the encoder has caught up, which
         // bounds that queue -- slower wall-clock export time, but memory that stays flat instead of
         // climbing without bound.
+        // ReadwriteEnableHardwareTransforms used to be true, letting the SinkWriter pick a
+        // GPU/driver H.264 encoder MFT over the software one. With throttling now correctly applied
+        // (see above), a report of export crawling for hours on a 6-minute recording pointed at the
+        // same root: WriteSample now blocks on whatever encoder got chosen, and a hardware MFT that's
+        // absent/broken/falling back badly for this driver would show up as exactly that -- near-total
+        // stall -- instead of the unthrottled runaway queue it used to hide behind. The bundled
+        // software H.264 encoder is slower per-frame on capable hardware, but it's the same MFT on
+        // every machine regardless of GPU/driver, which is worth far more than hardware's speed upside
+        // for a tool that has to just work on whatever the user has installed.
         var sinkAttrs = MediaFactory.MFCreateAttributes(1);
-        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
+        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, false).CheckError();
         var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
 
         var outType = MediaFactory.MFCreateMediaType();
