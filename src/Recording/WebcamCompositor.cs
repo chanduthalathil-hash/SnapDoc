@@ -4,12 +4,11 @@ using System.Runtime.InteropServices;
 namespace SnapDoc.Recording;
 
 /// <summary>
-/// Picture-in-picture placement + blit math, shared between whatever wants to draw a webcam frame
-/// into a screen frame's pixel buffer. Previously only used by <see cref="MfScreenRecorder"/> to
-/// bake the webcam in live; now the recorder saves webcam as its own sidecar track instead (see its
-/// class doc) and only <see cref="VideoEditExporter"/> calls this, at export time, using whatever
-/// position/size the editor's user picked. Kept as the exact same math either way so an export at
-/// the default position reproduces what used to be baked in live.
+/// Picture-in-picture placement + blit math, called once per frame by <see cref="MfScreenRecorder"/>
+/// (see its class doc) to bake the webcam directly into the screen frame's own pixel buffer live,
+/// during recording. There's no separate webcam track and nothing left for <see cref="VideoEditExporter"/>
+/// to composite at export time -- by the time a recording reaches the editor/exporter, the webcam is
+/// already just part of the video's pixels, same as any other frame content.
 /// </summary>
 internal static class WebcamCompositor
 {

@@ -69,6 +69,12 @@ public partial class EditorTimeline : UserControl
     private const double MinClipSeconds = 0.1;
     private const double SnapPixels = 8;
 
+    // Filmstrip cells render at ~64px wide (see ThumbWidth below) -- decoding thumbnails at ~2.5x
+    // that instead of full source resolution (was: passing no size hint to FrameGrabber at all, so
+    // every cell decoded and retained a full 1080p+ frame) keeps ThumbCache from being the multi-
+    // hundred-MB memory sink it used to be, while staying sharp on a HiDPI display.
+    private const int ThumbnailDecodeWidth = 160;
+
     public event Action<TimeSpan>? SeekRequested;
     public event Action? EditStarting; // fired right as a drag/trim begins, before the clip is mutated -- pairs with EditsChanged for undo snapshotting
     public event Action? EditsChanged; // fired after any move/trim/split/delete mutation, for undo snapshotting
@@ -600,6 +606,27 @@ public partial class EditorTimeline : UserControl
 
     // ---- thumbnails / waveforms (per clip, regenerated on trim/split -- a pure move keeps its cache) ----
 
+    /// <summary>Drops every clip's thumbnail/waveform cache and blanks the filmstrips -- called by
+    /// VideoEditorWindow right before Export starts. Even with thumbnails now decoded at a small
+    /// fixed size (see ThumbnailDecodeWidth) rather than full source resolution, a long recording
+    /// with several clips/zoom levels still adds up to real memory that has no reason to sit alive at
+    /// the exact moment the exporter is doing its own frame-by-frame decode/encode work. Pairs with
+    /// <see cref="RestoreContentCaches"/>, called once export finishes either way.</summary>
+    public void ReleaseContentCaches()
+    {
+        foreach (var list in _tracks.Values)
+            foreach (var c in list) { c.ThumbCache = null; c.WaveCache = null; }
+        foreach (var kind in _tracks.Keys) RedrawTrack(kind);
+    }
+
+    /// <summary>Regenerates whatever <see cref="ReleaseContentCaches"/> dropped, so the timeline isn't
+    /// left with blank filmstrips after an export completes/fails/is cancelled.</summary>
+    public void RestoreContentCaches()
+    {
+        foreach (var list in _tracks.Values)
+            foreach (var c in list) RegenerateClipContentAsync(c);
+    }
+
     private void InvalidateClipContent(TrackClip clip)
     {
         clip.ThumbCache = null;
@@ -624,7 +651,7 @@ public partial class EditorTimeline : UserControl
                 var result = new List<BitmapSource?>();
                 try
                 {
-                    using var grabber = new FrameGrabber(path);
+                    using var grabber = new FrameGrabber(path, ThumbnailDecodeWidth);
                     for (int i = 0; i < count; i++)
                         result.Add(grabber.GrabAt(sourceIn + TimeSpan.FromSeconds(duration.TotalSeconds * i / count)));
                 }

@@ -16,15 +16,23 @@ public static class CrashLogger
     public static string LogPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SnapDoc", "crash.log");
 
-    public static void LogAndShow(Exception? ex, string source)
+    /// <summary>Appends to the same log a fatal crash would, without the "needs to close" dialog --
+    /// for failures the app already recovers from on its own (e.g. a failed export) but that still
+    /// need enough detail on disk to diagnose if they recur.</summary>
+    public static void Log(string source, string message)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
             File.AppendAllText(LogPath,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{source}]{Environment.NewLine}{ex}{Environment.NewLine}{new string('-', 60)}{Environment.NewLine}");
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{source}]{Environment.NewLine}{message}{Environment.NewLine}{new string('-', 60)}{Environment.NewLine}");
         }
         catch { /* if even logging fails, there's nothing more we can do */ }
+    }
+
+    public static void LogAndShow(Exception? ex, string source)
+    {
+        Log(source, ex?.ToString() ?? "(null exception)");
 
         try
         {

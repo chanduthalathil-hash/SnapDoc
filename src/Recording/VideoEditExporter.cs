@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using SnapDoc.Services;
 using Vortice.MediaFoundation;
 
 namespace SnapDoc.Recording;
@@ -28,7 +30,9 @@ public sealed record PlanClip(string SourcePath, TimeSpan SourceIn, TimeSpan Sou
 /// clips' own baked-in audio as the system channel (see Export), which is what makes a recording made
 /// before per-track sidecars existed still exportable. Webcam (if the recording has one) has no track
 /// of its own -- it's already permanently part of the video clips' own pixels, composited live during
-/// recording (see MfScreenRecorder's class doc), so there's nothing separate for this plan to place.
+/// recording (see MfScreenRecorder's class doc and WebcamCompositor's), so there's nothing separate
+/// for this plan to place or for Export to re-composite -- a webcam recording's video clips decode
+/// and re-encode through the exact same path as a screen-only one.
 /// </summary>
 public sealed class VideoEditPlan
 {
@@ -157,6 +161,17 @@ public static class VideoEditExporter
         var clips = plan.VideoClips.Where(c => c.Duration > TimeSpan.Zero).OrderBy(c => c.TimelineStart).ToList();
 
         long outputCursor = 0; // next un-filled output tick (pre-speed), advances as clips/gaps are written
+        int frameIndex = 0;
+
+        // One reusable scratch buffer for the whole export instead of `new byte[bufferSize]` per
+        // frame: bufferSize is a full raw BGRA32 frame (~8MB at 1080p), well over the LOH threshold
+        // (85,000 bytes), so allocating one per frame -- thousands of times for a multi-minute
+        // recording -- churns the Large Object Heap. The LOH isn't compacted by default, so that
+        // churn fragments the process's address space until a native Media Foundation allocation
+        // (the encoder MFT, MFCreateMemoryBuffer) can't find a contiguous block and fails with
+        // E_OUTOFMEMORY even though total free memory looks fine. Reusing one buffer turns that into
+        // a single lived allocation for the entire export.
+        var frameBuffer = new byte[bufferSize];
 
         void FillGapWithBlack(long uptoTicks)
         {
@@ -165,8 +180,17 @@ public static class VideoEditExporter
             for (; outputCursor < uptoTicks; outputCursor += frameDurTicks)
             {
                 ct.ThrowIfCancellationRequested();
-                WriteVideoBytes(writer, streamIndex, blank, bufferSize,
-                    (long)(outputCursor / plan.SpeedFactor), (long)(frameDurTicks / plan.SpeedFactor));
+                try
+                {
+                    WriteVideoBytes(writer, streamIndex, blank, bufferSize,
+                        (long)(outputCursor / plan.SpeedFactor), (long)(frameDurTicks / plan.SpeedFactor));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    LogExportFailure("black gap fill", frameIndex, outputCursor, ex);
+                    throw;
+                }
+                frameIndex++;
             }
         }
 
@@ -205,16 +229,24 @@ public static class VideoEditExporter
                         long originalDuration = sample.SampleDuration;
                         using var buffer = sample.ConvertToContiguousBuffer();
                         buffer.Lock(out nint ptr, out _, out int length);
-                        byte[] bytes;
-                        try { bytes = new byte[bufferSize]; Marshal.Copy(ptr, bytes, 0, Math.Min(length, bufferSize)); }
+                        try { Marshal.Copy(ptr, frameBuffer, 0, Math.Min(length, bufferSize)); }
                         finally { buffer.Unlock(); }
 
-                        if (needsFilters) ApplyFilters(bytes, plan.Brightness, plan.Contrast, plan.Saturation, plan.Grayscale);
+                        if (needsFilters) ApplyFilters(frameBuffer, plan.Brightness, plan.Contrast, plan.Saturation, plan.Grayscale);
 
                         long newTime = (long)(outputTicks / plan.SpeedFactor);
                         long newDuration = (long)(originalDuration / plan.SpeedFactor);
-                        WriteVideoBytes(writer, streamIndex, bytes, bufferSize, newTime, newDuration);
+                        try
+                        {
+                            WriteVideoBytes(writer, streamIndex, frameBuffer, bufferSize, newTime, newDuration);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            LogExportFailure(clip.SourcePath, frameIndex, outputTicks, ex);
+                            throw;
+                        }
                         outputCursor = outputTicks + frameDurTicks;
+                        frameIndex++;
 
                         if (masterTicks > 0) progress?.Report(Math.Clamp(outputTicks / (double)masterTicks * 0.85, 0, 0.85));
                     }
@@ -224,6 +256,27 @@ public static class VideoEditExporter
         }
 
         FillGapWithBlack(masterTicks);
+    }
+
+    /// <summary>Captures exactly what future diagnosis needs when a frame write fails mid-export --
+    /// where in the output it happened and what the process's memory looked like at that instant --
+    /// since by the time the exception reaches the UI's catch block that context is gone. Written
+    /// via <see cref="CrashLogger.Log"/> rather than surfaced to the user directly; Export_Click
+    /// turns the exception itself into a plain-language message instead of the raw HRESULT text.</summary>
+    private static void LogExportFailure(string context, int frameIndex, long outputTicks, Exception ex)
+    {
+        try
+        {
+            using var proc = Process.GetCurrentProcess();
+            double workingSetMb = proc.WorkingSet64 / 1024.0 / 1024.0;
+            double privateMb = proc.PrivateMemorySize64 / 1024.0 / 1024.0;
+            double managedMb = GC.GetTotalMemory(false) / 1024.0 / 1024.0;
+            CrashLogger.Log("VideoExport",
+                $"Failed writing frame {frameIndex} at {TimeSpan.FromTicks(outputTicks):hh\\:mm\\:ss\\.fff} ({context}). " +
+                $"Process memory at failure -- working set: {workingSetMb:0} MB, private bytes: {privateMb:0} MB, managed heap: {managedMb:0} MB." +
+                $"{Environment.NewLine}{ex}");
+        }
+        catch { /* logging must never mask the real export failure */ }
     }
 
     // Basic brightness/contrast/saturation/grayscale, applied per-pixel to a BGRA32 buffer -- not a

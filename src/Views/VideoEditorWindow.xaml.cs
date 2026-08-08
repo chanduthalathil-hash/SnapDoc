@@ -794,6 +794,11 @@ public partial class VideoEditorWindow : Window
         var progress = new Progress<double>(p => ExportProgress.Value = p * 100);
 
         var masterDuration = Timeline.Duration;
+
+        // Nothing here needs to render while a background export is decoding/encoding its own
+        // frames -- see EditorTimeline.ReleaseContentCaches for why keeping the filmstrip/waveform
+        // caches alive during export matters, not just after it.
+        Timeline.ReleaseContentCaches();
         try
         {
             await Task.Run(() => VideoEditExporter.Export(plan, progress, masterDuration, _exportCts.Token));
@@ -813,7 +818,16 @@ public partial class VideoEditorWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = "";
-            MessageBox.Show(this, $"Export failed:\n{ex.Message}", "SnapDoc", MessageBoxButton.OK, MessageBoxImage.Error);
+            // VideoEditExporter already logged frame index/timestamp/process-memory context for an
+            // OOM-flavored failure at the exact moment it happened (see its LogExportFailure) -- this
+            // just makes sure whatever reaches here ends up on disk too, and shows something a user
+            // can actually act on instead of a raw "HRESULT: [0x8007000E] ..." string.
+            CrashLogger.Log("VideoExport", $"Export failed for '{_clip.FilePath}' -> '{outputPath}'.{Environment.NewLine}{ex}");
+            string message = IsOutOfMemory(ex)
+                ? "Export ran out of memory. Try closing other applications, exporting a shorter section, " +
+                  "or lowering the export quality (the gear icon next to Export), then try again."
+                : $"Export failed:\n{ex.Message}";
+            MessageBox.Show(this, message, "SnapDoc", MessageBoxButton.OK, MessageBoxImage.Error);
             try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { /* best effort cleanup */ }
         }
         finally
@@ -822,8 +836,12 @@ public partial class VideoEditorWindow : Window
             ExportProgress.Visibility = Visibility.Collapsed;
             _exportCts.Dispose();
             _exportCts = null;
+            Timeline.RestoreContentCaches();
         }
     }
+
+    private static bool IsOutOfMemory(Exception ex) =>
+        ex is OutOfMemoryException || ex.HResult == unchecked((int)0x8007000E);
 
     private List<PlanClip> ToPlanClips(TrackKind kind) =>
         Timeline.ClipsOn(kind).Select(c => new PlanClip(c.SourcePath, c.SourceIn, c.SourceOut, c.TimelineStart)).ToList();

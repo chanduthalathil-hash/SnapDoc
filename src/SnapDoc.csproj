@@ -3,6 +3,12 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <!-- Pinned explicitly so a plain `dotnet build`/`dotnet publish` (no -r win-x64) can never
+         accidentally produce/prefer a 32-bit process: video export routinely needs to carry several
+         large frame/audio buffers at once, which x86's ~2-4GB address space can't reliably fit even
+         with plenty of physical RAM free. Confirmed the shipped build was already x64 either way
+         (checked bin/Release's SnapDoc.exe PE header), but this makes it load-bearing, not incidental. -->
+    <PlatformTarget>x64</PlatformTarget>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms> <!-- needed for global hotkeys, tray icon, screen enumeration -->
     <Nullable>enable</Nullable>
