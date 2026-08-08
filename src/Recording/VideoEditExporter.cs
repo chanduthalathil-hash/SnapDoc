@@ -105,6 +105,14 @@ public static class VideoEditExporter
     {
         MediaFoundationBootstrap.EnsureStarted();
 
+        // Logged once per export so a memory-related failure's log entry always has an unambiguous
+        // answer to "is this even a 64-bit process" sitting right above it, instead of that having to
+        // be re-derived/asserted separately every time this comes up.
+        CrashLogger.Log("VideoExport",
+            $"Starting export of '{plan.SourcePath}' -> '{plan.OutputPath}'. " +
+            $"Process: {(Environment.Is64BitProcess ? "64-bit" : "32-BIT")} (IntPtr.Size={IntPtr.Size}), " +
+            $"OS: {(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}.");
+
         var (width, height, fps) = ProbeVideoFormat(plan.SourcePath);
 
         // Neither sidecar exists (a recording made before per-track editing existed) -- fall back to
@@ -176,18 +184,23 @@ public static class VideoEditExporter
         long outputCursor = 0; // next un-filled output tick (pre-speed), advances as clips/gaps are written
         int frameIndex = 0;
 
-        // Encoder throughput has no dedicated diagnostic today -- a "stuck" export (WriteSample
-        // blocking on a struggling/broken encoder MFT, e.g. a bad hardware transform) looks
-        // identical to a healthy slow one from the outside until a user gives up waiting. Logging a
-        // running fps figure every so often means the next report of "it's just sitting there" comes
-        // with real throughput numbers instead of another guess.
+        // No dedicated diagnostic previously existed for memory *trend* during export -- LogExportFailure
+        // (below) only captures a snapshot at the moment of failure, which tells you the peak but not
+        // whether it got there by climbing steadily (buffering/leak -- fixable) or was already high
+        // and hit a hard ceiling immediately (address-space limit -- would need a different fix
+        // entirely). Logging all three numbers together every 100 frames makes that distinction
+        // readable directly off a real run's log instead of inferred from a single data point.
         var exportStopwatch = Stopwatch.StartNew();
         void MaybeLogThroughput()
         {
-            if (frameIndex == 0 || frameIndex % 300 != 0) return;
+            if (frameIndex == 0 || frameIndex % 100 != 0) return;
+            using var proc = Process.GetCurrentProcess();
             double fps2 = frameIndex / Math.Max(0.001, exportStopwatch.Elapsed.TotalSeconds);
             CrashLogger.Log("VideoExportProgress",
-                $"{frameIndex} frames written in {exportStopwatch.Elapsed:mm\\:ss} (~{fps2:0.0} fps effective encode rate).");
+                $"frame {frameIndex} | elapsed {exportStopwatch.Elapsed:mm\\:ss} | ~{fps2:0.0} fps | " +
+                $"managed heap: {GC.GetTotalMemory(false) / 1024.0 / 1024.0:0} MB | " +
+                $"working set: {proc.WorkingSet64 / 1024.0 / 1024.0:0} MB | " +
+                $"private bytes: {proc.PrivateMemorySize64 / 1024.0 / 1024.0:0} MB");
         }
 
         // One reusable scratch buffer for the whole export instead of `new byte[bufferSize]` per
@@ -241,7 +254,23 @@ public static class VideoEditExporter
                 while (true)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var sample = reader.ReadSample(SourceReaderIndex.FirstVideoStream, 0, out _, out var flags, out long ts);
+                    IMFSample? sample;
+                    SourceReaderFlag flags;
+                    long ts;
+                    try
+                    {
+                        sample = reader.ReadSample(SourceReaderIndex.FirstVideoStream, 0, out _, out flags, out ts);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // This exact call is what the previous failure (crash.log, 22:49:52) went
+                        // through uncaught -- WriteVideoBytes below was already wrapped, ReadSample
+                        // wasn't, so that entry reached the generic outer catch with no frame index or
+                        // memory numbers attached. Closing that gap so a decode-side failure is exactly
+                        // as diagnosable as an encode-side one.
+                        LogExportFailure($"reading source frame from {clip.SourcePath}", frameIndex, outputCursor, ex);
+                        throw;
+                    }
                     if ((flags & SourceReaderFlag.EndOfStream) != 0) break;
                     if (sample == null) continue;
 
@@ -471,7 +500,16 @@ public static class VideoEditExporter
                     }
                 }
             }
-            catch { /* best effort -- whatever wasn't placed just stays silence */ }
+            catch (Exception ex)
+            {
+                // Still best-effort -- whatever wasn't placed just stays silence, same as before --
+                // but this used to swallow the exception completely, including a genuine OOM here
+                // (this decodes a full clip's audio the same way ExportVideo decodes video, just PCM
+                // instead of BGRA32). Logging it means a silent audio track in an export -- or in the
+                // editor's own waveform preview, which hits this same kind of decode -- shows up as a
+                // reason on disk instead of just quietly being wrong.
+                CrashLogger.Log("VideoExportAudio", $"Skipping unreadable audio from '{clip.SourcePath}': {ex.GetType().Name}: {ex.Message}");
+            }
             finally { reader?.Dispose(); }
         }
         return output;

@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using SnapDoc.Recording;
+using SnapDoc.Services;
 using Vortice.MediaFoundation;
 
 namespace SnapDoc.Views.Controls;
@@ -735,9 +736,14 @@ public partial class EditorTimeline : UserControl
 
             return peaks;
         }
-        catch
+        catch (Exception ex)
         {
-            return null; // waveform is cosmetic -- a decode failure just leaves that row blank
+            // Still cosmetic -- a decode failure just leaves that row blank, same behavior as before --
+            // but this used to swallow the reason completely, which is exactly the wrong thing when a
+            // System/Mic lane comes up blank and there's no way to tell "this file has no audio" from
+            // "the sidecar file is missing/corrupt" from "the format wasn't decodable" without it.
+            CrashLogger.Log("WaveformGen", $"Waveform generation failed for '{path}': {ex.GetType().Name}: {ex.Message}");
+            return null;
         }
         finally { reader?.Dispose(); }
     }
