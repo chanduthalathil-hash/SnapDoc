@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Threading;
 using SnapDoc.Services;
@@ -137,7 +138,19 @@ public static class VideoEditExporter
             ExportVideo(plan, writer, videoStreamIdx, width, height, fps, masterDuration, progress, ct);
 
             if (writeAudio)
+            {
+                // ExportVideo just finished a long run of large (frame-sized) allocations -- even
+                // with a single reused buffer for the decode loop itself, the video processor MFT,
+                // encoder, and everything upstream of it still churn their own large buffers over
+                // that same run. ExportMixedAudio is about to need one or two more big contiguous
+                // managed allocations (each the length of the whole track). Rather than hope the
+                // already-used LOH happens to have room, request one compacting collection right at
+                // this natural boundary -- the standard fix for "big allocation right after a lot of
+                // large-object churn" fragmentation, and cheap since it only runs once per export.
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect();
                 ExportMixedAudio(plan, writer, audioStreamIdx, systemClips, micClips, audioSampleRate, audioChannels, masterDuration.Ticks, ct);
+            }
 
             writer.Finalize();
         }
@@ -258,11 +271,12 @@ public static class VideoEditExporter
         FillGapWithBlack(masterTicks);
     }
 
-    /// <summary>Captures exactly what future diagnosis needs when a frame write fails mid-export --
-    /// where in the output it happened and what the process's memory looked like at that instant --
-    /// since by the time the exception reaches the UI's catch block that context is gone. Written
-    /// via <see cref="CrashLogger.Log"/> rather than surfaced to the user directly; Export_Click
-    /// turns the exception itself into a plain-language message instead of the raw HRESULT text.</summary>
+    /// <summary>Captures exactly what future diagnosis needs when export fails -- where it happened
+    /// (a video frame, or the audio mix -- <paramref name="frameIndex"/> negative means "not a
+    /// per-frame failure") and what the process's memory looked like at that instant, since by the
+    /// time the exception reaches the UI's catch block that context is gone. Written via
+    /// <see cref="CrashLogger.Log"/> rather than surfaced to the user directly; Export_Click turns
+    /// the exception itself into a plain-language message instead of the raw HRESULT text.</summary>
     private static void LogExportFailure(string context, int frameIndex, long outputTicks, Exception ex)
     {
         try
@@ -271,10 +285,12 @@ public static class VideoEditExporter
             double workingSetMb = proc.WorkingSet64 / 1024.0 / 1024.0;
             double privateMb = proc.PrivateMemorySize64 / 1024.0 / 1024.0;
             double managedMb = GC.GetTotalMemory(false) / 1024.0 / 1024.0;
+            string where = frameIndex >= 0
+                ? $"writing frame {frameIndex} at {TimeSpan.FromTicks(outputTicks):hh\\:mm\\:ss\\.fff} ({context})"
+                : $"during {context}";
             CrashLogger.Log("VideoExport",
-                $"Failed writing frame {frameIndex} at {TimeSpan.FromTicks(outputTicks):hh\\:mm\\:ss\\.fff} ({context}). " +
-                $"Process memory at failure -- working set: {workingSetMb:0} MB, private bytes: {privateMb:0} MB, managed heap: {managedMb:0} MB." +
-                $"{Environment.NewLine}{ex}");
+                $"Failed {where}. Process memory at failure -- working set: {workingSetMb:0} MB, " +
+                $"private bytes: {privateMb:0} MB, managed heap: {managedMb:0} MB.{Environment.NewLine}{ex}");
         }
         catch { /* logging must never mask the real export failure */ }
     }
@@ -329,28 +345,41 @@ public static class VideoEditExporter
         totalBytes -= totalBytes % (2 * channels);
         if (totalBytes <= 0) return;
 
-        byte[]? systemBuf = systemClips.Count > 0
-            ? DecodeClipsToTimeline(systemClips, plan.SpeedFactor, plan.SystemVolume, totalBytes, bytesPerSecond, sampleRate, channels, ct) : null;
-        byte[]? micBuf = micClips.Count > 0
-            ? DecodeClipsToTimeline(micClips, plan.SpeedFactor, plan.MicVolume, totalBytes, bytesPerSecond, sampleRate, channels, ct) : null;
-        if (micBuf != null && plan.NoiseReduction) ApplyNoiseGate(micBuf);
-
-        byte[] mixed = systemBuf != null && micBuf != null ? AudioCaptureMixer.MixPcm16(systemBuf, micBuf)
-                     : systemBuf ?? micBuf ?? Array.Empty<byte>();
-
-        if (Math.Abs(plan.MasterVolume - 1.0) > 0.001) ApplyGain(mixed, plan.MasterVolume);
-
-        const int chunkBytes = 32 * 1024;
-        long tick = 0;
-        for (int offset = 0; offset < mixed.Length; offset += chunkBytes)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            int len = Math.Min(chunkBytes, mixed.Length - offset);
-            var chunk = new byte[len];
-            Array.Copy(mixed, offset, chunk, 0, len);
-            long durationTicks = (long)(len / (double)bytesPerSecond * TimeSpan.TicksPerSecond);
-            WriteAudioBytes(writer, streamIndex, chunk, tick, durationTicks);
-            tick += durationTicks;
+            byte[]? systemBuf = systemClips.Count > 0
+                ? DecodeClipsToTimeline(systemClips, plan.SpeedFactor, plan.SystemVolume, totalBytes, bytesPerSecond, sampleRate, channels, ct) : null;
+            byte[]? micBuf = micClips.Count > 0
+                ? DecodeClipsToTimeline(micClips, plan.SpeedFactor, plan.MicVolume, totalBytes, bytesPerSecond, sampleRate, channels, ct) : null;
+            if (micBuf != null && plan.NoiseReduction) ApplyNoiseGate(micBuf);
+
+            // Mix into whichever buffer already exists instead of allocating a third totalBytes-sized
+            // array just to hold the sum -- see AudioCaptureMixer.MixPcm16Into. Two duration-length
+            // buffers alive at once instead of three, right where memory is already tightest.
+            byte[] mixed;
+            if (systemBuf != null && micBuf != null) { AudioCaptureMixer.MixPcm16Into(systemBuf, micBuf); mixed = systemBuf; }
+            else mixed = systemBuf ?? micBuf ?? Array.Empty<byte>();
+
+            if (Math.Abs(plan.MasterVolume - 1.0) > 0.001) ApplyGain(mixed, plan.MasterVolume);
+
+            const int chunkBytes = 32 * 1024;
+            long tick = 0;
+            for (int offset = 0; offset < mixed.Length; offset += chunkBytes)
+            {
+                ct.ThrowIfCancellationRequested();
+                int len = Math.Min(chunkBytes, mixed.Length - offset);
+                var chunk = new byte[len];
+                Array.Copy(mixed, offset, chunk, 0, len);
+                long durationTicks = (long)(len / (double)bytesPerSecond * TimeSpan.TicksPerSecond);
+                WriteAudioBytes(writer, streamIndex, chunk, tick, durationTicks);
+                tick += durationTicks;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogExportFailure($"audio mix (system clips: {systemClips.Count}, mic clips: {micClips.Count}, " +
+                $"track length: {totalBytes / 1024.0 / 1024.0:0.0} MB)", -1, 0, ex);
+            throw;
         }
     }
 

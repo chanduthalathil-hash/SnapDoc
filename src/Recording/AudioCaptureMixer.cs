@@ -161,8 +161,10 @@ public sealed class AudioCaptureMixer : IDisposable
     }
 
     /// <summary>Sums two already-16-bit-PCM buffers sample-by-sample, clamped against overflow.
-    /// Also reused by <see cref="Recording.VideoEditExporter"/> at export time to re-mix the
-    /// mic/system sidecar tracks at the editor's chosen volumes.</summary>
+    /// Live capture chunks are small (a few hundred ms), so a fresh output array per call here is
+    /// fine -- <see cref="Recording.VideoEditExporter"/> uses <see cref="MixPcm16Into"/> instead for
+    /// its own duration-length buffers, where a third full-size allocation just to hold the sum is
+    /// the difference between two big buffers alive at once and three.</summary>
     internal static byte[] MixPcm16(byte[] aPcm, byte[] bPcm)
     {
         int n = Math.Min(aPcm.Length, bPcm.Length) / 2;
@@ -176,6 +178,22 @@ public sealed class AudioCaptureMixer : IDisposable
             mixed[i * 2 + 1] = (byte)((clamped >> 8) & 0xFF);
         }
         return mixed;
+    }
+
+    /// <summary>Same sum as <see cref="MixPcm16"/>, written back into <paramref name="target"/>
+    /// in place instead of returning a new array -- see <see cref="Recording.VideoEditExporter"/>'s
+    /// ExportMixedAudio, the only caller, for why avoiding that third allocation matters there.</summary>
+    internal static void MixPcm16Into(byte[] target, byte[] addPcm)
+    {
+        int n = Math.Min(target.Length, addPcm.Length) / 2;
+        for (int i = 0; i < n; i++)
+        {
+            short a = BitConverter.ToInt16(target, i * 2);
+            short b = BitConverter.ToInt16(addPcm, i * 2);
+            short clamped = (short)Math.Clamp(a + b, short.MinValue, short.MaxValue);
+            target[i * 2] = (byte)(clamped & 0xFF);
+            target[i * 2 + 1] = (byte)((clamped >> 8) & 0xFF);
+        }
     }
 
     public void Dispose()
