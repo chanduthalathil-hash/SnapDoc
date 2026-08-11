@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using SnapDoc.Services;
 using Vortice.MediaFoundation;
@@ -62,10 +62,22 @@ public sealed class VideoEditPlan
 }
 
 /// <summary>
-/// Turns a <see cref="VideoEditPlan"/> into a real file by decoding each track's clips through Media
-/// Foundation's SourceReader and re-encoding through a fresh SinkWriter -- the same H.264/AAC pipeline
-/// <see cref="MfScreenRecorder"/> already uses for live recording, just fed from files instead of the
-/// screen/mic directly.
+/// Turns a <see cref="VideoEditPlan"/> into a real file: decodes each track's clips through Media
+/// Foundation's SourceReader (unchanged, and never implicated in the problem below -- decoding has
+/// shown no evidence of leaking), streams the resulting raw BGRA32 frames straight into a bundled
+/// ffmpeg.exe child process for the actual video encode, and hands ffmpeg a temp WAV file for audio.
+///
+/// This used to encode through a Media Foundation IMFSinkWriter instead (matching what
+/// <see cref="MfScreenRecorder"/> uses live). That had a confirmed, precisely-measured native leak:
+/// every single frame written retained ~35MB (one frame-buffer's worth) permanently, at a
+/// machine-precision-consistent rate, regardless of throttling, hardware-transform, or low-latency
+/// settings -- five different targeted fixes to that SinkWriter never touched it, because the
+/// retention was happening inside the SinkWriter/encoder's own internal reference-holding, a level
+/// none of those attributes actually control. Piping to ffmpeg sidesteps the whole class of bug: an
+/// OS pipe has a small, fixed kernel buffer, so writing frames to ffmpeg's stdin blocks the instant
+/// ffmpeg falls behind -- real, structural backpressure, not a setting that may or may not be honored
+/// by an opaque native component. See FfmpegEncoder for the encoder process itself, and
+/// ThirdParty/ffmpeg/NOTICE.txt for exactly which build/license.
 ///
 /// Each track's clips are decoded independently and placed onto the shared master timeline at their
 /// own <see cref="PlanClip.TimelineStart"/> -- video seeks once per clip then decodes forward linearly,
@@ -147,6 +159,9 @@ public static class VideoEditExporter
             return;
         }
 
+        if (!FfmpegEncoder.IsAvailable)
+            throw new InvalidOperationException($"ffmpeg.exe is missing from the install (expected at '{FfmpegEncoder.ExecutablePath}'). Try reinstalling SnapDoc.");
+
         var (width, height, fps) = ProbeVideoFormat(plan.SourcePath);
 
         // Neither sidecar exists (a recording made before per-track editing existed) -- fall back to
@@ -159,9 +174,7 @@ public static class VideoEditExporter
         // the output's own sample rate/channels come from. Earlier this derived the output format by
         // probing the first clip's own file, which was fine when that was always the recording's own
         // 48kHz/stereo capture, but a user-imported external file (see EditorTimeline's drag-and-drop)
-        // can be mono, an unusual rate, or otherwise something the AAC encoder MFT flatly rejects as
-        // an *output* format (confirmed: a mono 22050Hz import made SetInputMediaType throw
-        // MF_E_INVALIDMEDIATYPE). Fixing the output at a known AAC-safe format and letting
+        // can be mono or an unusual rate. Fixing the output at a known-safe format and letting
         // DecodeClipsToTimeline's forced resample (see its own comment) bring every clip -- original
         // or imported, whatever its native format -- into that same target sidesteps the whole class
         // of "which source's format wins" problem.
@@ -172,39 +185,45 @@ public static class VideoEditExporter
         const int audioSampleRate = 48000, audioChannels = 2;
 
         Directory.CreateDirectory(Path.GetDirectoryName(plan.OutputPath)!);
-        var (writer, videoStreamIdx, audioStreamIdx) = CreateSinkWriter(
-            plan.OutputPath, width, height, fps, writeAudio ? audioSampleRate : null, writeAudio ? audioChannels : null, plan.QualityMultiplier);
+
+        string? audioWavPath = writeAudio
+            ? Path.Combine(Path.GetTempPath(), $"snapdoc_export_audio_{Guid.NewGuid():N}.wav")
+            : null;
 
         try
         {
-            ExportVideo(plan, writer, videoStreamIdx, width, height, fps, masterDuration, progress, ct);
+            if (audioWavPath != null)
+                ExportMixedAudioToWav(plan, systemClips, micClips, audioSampleRate, audioChannels, masterDuration.Ticks, audioWavPath, ct);
 
-            if (writeAudio)
+            string videoEncoder = FfmpegEncoder.DetectBestVideoEncoder();
+            int bitrate = (int)(EstimateVideoBitrate(width, height, fps) * plan.QualityMultiplier);
+            double effectiveFps = fps * plan.SpeedFactor; // see ExportVideoToFfmpeg's comment on speed
+
+            CrashLogger.Log("VideoExport", $"Encoding via ffmpeg with video encoder '{videoEncoder}', {width}x{height}@{effectiveFps:0.###}fps, bitrate {bitrate}bps, audio: {(audioWavPath != null ? "yes" : "no")}.");
+
+            using var session = FfmpegEncodeSession.Start(width, height, effectiveFps, audioWavPath, plan.OutputPath, bitrate, videoEncoder);
+            try
             {
-                // ExportVideo just finished a long run of large (frame-sized) allocations -- even
-                // with a single reused buffer for the decode loop itself, the video processor MFT,
-                // encoder, and everything upstream of it still churn their own large buffers over
-                // that same run. ExportMixedAudio is about to need one or two more big contiguous
-                // managed allocations (each the length of the whole track). Rather than hope the
-                // already-used LOH happens to have room, request one compacting collection right at
-                // this natural boundary -- the standard fix for "big allocation right after a lot of
-                // large-object churn" fragmentation, and cheap since it only runs once per export.
-                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-                GC.Collect();
-                ExportMixedAudio(plan, writer, audioStreamIdx, systemClips, micClips, audioSampleRate, audioChannels, masterDuration.Ticks, ct);
+                ExportVideoToFfmpeg(plan, session.VideoInput, width, height, fps, masterDuration, progress, ct);
+                progress?.Report(0.95); // all frames handed off -- what's left is ffmpeg finishing/finalizing the file
+                session.FinishAndThrowIfFailed(ct);
+                progress?.Report(1.0);
             }
-
-            writer.Finalize();
+            catch
+            {
+                session.Cancel();
+                throw;
+            }
         }
         finally
         {
-            writer.Dispose();
+            if (audioWavPath != null) { try { File.Delete(audioWavPath); } catch { /* best effort cleanup */ } }
         }
     }
 
-    // ---- video: per-clip seek-once-then-linear-decode, filters, speed retiming ----
+    // ---- video: per-clip seek-once-then-linear-decode, filters, streamed straight to ffmpeg's stdin ----
 
-    private static void ExportVideo(VideoEditPlan plan, IMFSinkWriter writer, int streamIndex,
+    private static void ExportVideoToFfmpeg(VideoEditPlan plan, Stream ffmpegStdin,
         int width, int height, int fps, TimeSpan masterDuration, IProgress<double>? progress, CancellationToken ct)
     {
         int stride = width * 4;
@@ -215,15 +234,24 @@ public static class VideoEditExporter
 
         var clips = plan.VideoClips.Where(c => c.Duration > TimeSpan.Zero).OrderBy(c => c.TimelineStart).ToList();
 
-        long outputCursor = 0; // next un-filled output tick (pre-speed), advances as clips/gaps are written
+        // Speed used to be applied by writing every decoded frame with an explicit, compressed/
+        // stretched sample timestamp (Media Foundation samples carry their own timing, independent of
+        // the container's nominal frame rate). A raw ffmpeg pipe has no per-frame timestamp -- it's
+        // strictly constant-rate at whatever -framerate was declared -- so the equivalent here is
+        // simpler: declare the input framerate as fps*SpeedFactor (see Export, effectiveFps) and just
+        // write every frame in order, undisturbed. Same frame count, same order, different declared
+        // rate -- ffmpeg (and every player) shows them faster/slower exactly as before. This is why
+        // frames are written here with no per-write timing math at all, unlike the old WriteVideoBytes.
+        long outputCursor = 0; // next un-filled output tick (pre-speed timeline space), advances as clips/gaps are written
         int frameIndex = 0;
 
         // No dedicated diagnostic previously existed for memory *trend* during export -- LogExportFailure
         // (below) only captures a snapshot at the moment of failure, which tells you the peak but not
-        // whether it got there by climbing steadily (buffering/leak -- fixable) or was already high
-        // and hit a hard ceiling immediately (address-space limit -- would need a different fix
-        // entirely). Logging all three numbers together every 100 frames makes that distinction
-        // readable directly off a real run's log instead of inferred from a single data point.
+        // whether it got there by climbing steadily (buffering/leak) or was already high and hit a
+        // hard ceiling immediately (address-space limit). Logging all three numbers together every 100
+        // frames makes that distinction readable directly off a real run's log. Kept even after moving
+        // to ffmpeg specifically so the next run's numbers are directly comparable to the ones that
+        // proved the old SinkWriter's leak (~35MB/frame, unbounded) -- this pipeline should stay flat.
         var exportStopwatch = Stopwatch.StartNew();
         void MaybeLogThroughput()
         {
@@ -237,15 +265,20 @@ public static class VideoEditExporter
                 $"private bytes: {proc.PrivateMemorySize64 / 1024.0 / 1024.0:0} MB");
         }
 
-        // One reusable scratch buffer for the whole export instead of `new byte[bufferSize]` per
-        // frame: bufferSize is a full raw BGRA32 frame (~8MB at 1080p), well over the LOH threshold
-        // (85,000 bytes), so allocating one per frame -- thousands of times for a multi-minute
-        // recording -- churns the Large Object Heap. The LOH isn't compacted by default, so that
-        // churn fragments the process's address space until a native Media Foundation allocation
-        // (the encoder MFT, MFCreateMemoryBuffer) can't find a contiguous block and fails with
-        // E_OUTOFMEMORY even though total free memory looks fine. Reusing one buffer turns that into
-        // a single lived allocation for the entire export.
+        // Still one reused buffer for the whole export (not `new byte[bufferSize]` per frame) -- no
+        // longer strictly needed to dodge LOH fragmentation the way it was with the old per-frame
+        // native MFCreateMemoryBuffer allocations, but there's no reason to give that up either.
         var frameBuffer = new byte[bufferSize];
+
+        void WriteFrame(byte[] bytes)
+        {
+            try { ffmpegStdin.Write(bytes, 0, bufferSize); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogExportFailure("writing frame to ffmpeg", frameIndex, outputCursor, ex);
+                throw;
+            }
+        }
 
         void FillGapWithBlack(long uptoTicks)
         {
@@ -254,16 +287,7 @@ public static class VideoEditExporter
             for (; outputCursor < uptoTicks; outputCursor += frameDurTicks)
             {
                 ct.ThrowIfCancellationRequested();
-                try
-                {
-                    WriteVideoBytes(writer, streamIndex, blank, bufferSize,
-                        (long)(outputCursor / plan.SpeedFactor), (long)(frameDurTicks / plan.SpeedFactor));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    LogExportFailure("black gap fill", frameIndex, outputCursor, ex);
-                    throw;
-                }
+                WriteFrame(blank);
                 frameIndex++;
             }
         }
@@ -297,11 +321,6 @@ public static class VideoEditExporter
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        // This exact call is what the previous failure (crash.log, 22:49:52) went
-                        // through uncaught -- WriteVideoBytes below was already wrapped, ReadSample
-                        // wasn't, so that entry reached the generic outer catch with no frame index or
-                        // memory numbers attached. Closing that gap so a decode-side failure is exactly
-                        // as diagnosable as an encode-side one.
                         LogExportFailure($"reading source frame from {clip.SourcePath}", frameIndex, outputCursor, ex);
                         throw;
                     }
@@ -316,7 +335,6 @@ public static class VideoEditExporter
                         long outputTicks = clip.TimelineStart.Ticks + (ts - clip.SourceIn.Ticks);
                         if (outputTicks < outputCursor) continue; // keep the written stream monotonic
 
-                        long originalDuration = sample.SampleDuration;
                         using var buffer = sample.ConvertToContiguousBuffer();
                         buffer.Lock(out nint ptr, out _, out int length);
                         try { Marshal.Copy(ptr, frameBuffer, 0, Math.Min(length, bufferSize)); }
@@ -324,17 +342,7 @@ public static class VideoEditExporter
 
                         if (needsFilters) ApplyFilters(frameBuffer, plan.Brightness, plan.Contrast, plan.Saturation, plan.Grayscale);
 
-                        long newTime = (long)(outputTicks / plan.SpeedFactor);
-                        long newDuration = (long)(originalDuration / plan.SpeedFactor);
-                        try
-                        {
-                            WriteVideoBytes(writer, streamIndex, frameBuffer, bufferSize, newTime, newDuration);
-                        }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
-                        {
-                            LogExportFailure(clip.SourcePath, frameIndex, outputTicks, ex);
-                            throw;
-                        }
+                        WriteFrame(frameBuffer);
                         outputCursor = outputTicks + frameDurTicks;
                         frameIndex++;
                         MaybeLogThroughput();
@@ -354,7 +362,7 @@ public static class VideoEditExporter
     /// per-frame failure") and what the process's memory looked like at that instant, since by the
     /// time the exception reaches the UI's catch block that context is gone. Written via
     /// <see cref="CrashLogger.Log"/> rather than surfaced to the user directly; Export_Click turns
-    /// the exception itself into a plain-language message instead of the raw HRESULT text.</summary>
+    /// the exception itself into a plain-language message instead of raw exception text.</summary>
     private static void LogExportFailure(string context, int frameIndex, long outputTicks, Exception ex)
     {
         try
@@ -393,29 +401,10 @@ public static class VideoEditExporter
         }
     }
 
-    private static void WriteVideoBytes(IMFSinkWriter writer, int streamIndex, byte[] bytes, int bufferSize, long sampleTime, long duration)
-    {
-        var buffer = MediaFactory.MFCreateMemoryBuffer(bufferSize);
-        try
-        {
-            buffer.Lock(out nint ptr, out _, out _);
-            try { Marshal.Copy(bytes, 0, ptr, bufferSize); }
-            finally { buffer.Unlock(); }
-            buffer.CurrentLength = bufferSize;
+    // ---- audio: mix mic + system, each track's clips decoded and placed independently, written to a temp WAV for ffmpeg to mux ----
 
-            using var sample = MediaFactory.MFCreateSample();
-            sample.AddBuffer(buffer);
-            sample.SampleTime = sampleTime;
-            sample.SampleDuration = duration;
-            writer.WriteSample(streamIndex, sample);
-        }
-        finally { buffer.Dispose(); }
-    }
-
-    // ---- audio: mix mic + system, each track's clips decoded and placed independently ----
-
-    private static void ExportMixedAudio(VideoEditPlan plan, IMFSinkWriter writer, int streamIndex,
-        List<PlanClip> systemClips, List<PlanClip> micClips, int sampleRate, int channels, long masterDurationTicks, CancellationToken ct)
+    private static void ExportMixedAudioToWav(VideoEditPlan plan, List<PlanClip> systemClips, List<PlanClip> micClips,
+        int sampleRate, int channels, long masterDurationTicks, string wavPath, CancellationToken ct)
     {
         int bytesPerSecond = sampleRate * channels * 2;
         long finalDurationTicks = (long)(masterDurationTicks / plan.SpeedFactor);
@@ -432,26 +421,15 @@ public static class VideoEditExporter
             if (micBuf != null && plan.NoiseReduction) ApplyNoiseGate(micBuf);
 
             // Mix into whichever buffer already exists instead of allocating a third totalBytes-sized
-            // array just to hold the sum -- see AudioCaptureMixer.MixPcm16Into. Two duration-length
-            // buffers alive at once instead of three, right where memory is already tightest.
+            // array just to hold the sum -- see AudioCaptureMixer.MixPcm16Into.
             byte[] mixed;
             if (systemBuf != null && micBuf != null) { AudioCaptureMixer.MixPcm16Into(systemBuf, micBuf); mixed = systemBuf; }
             else mixed = systemBuf ?? micBuf ?? Array.Empty<byte>();
 
             if (Math.Abs(plan.MasterVolume - 1.0) > 0.001) ApplyGain(mixed, plan.MasterVolume);
 
-            const int chunkBytes = 32 * 1024;
-            long tick = 0;
-            for (int offset = 0; offset < mixed.Length; offset += chunkBytes)
-            {
-                ct.ThrowIfCancellationRequested();
-                int len = Math.Min(chunkBytes, mixed.Length - offset);
-                var chunk = new byte[len];
-                Array.Copy(mixed, offset, chunk, 0, len);
-                long durationTicks = (long)(len / (double)bytesPerSecond * TimeSpan.TicksPerSecond);
-                WriteAudioBytes(writer, streamIndex, chunk, tick, durationTicks);
-                tick += durationTicks;
-            }
+            ct.ThrowIfCancellationRequested();
+            WritePcm16WavFile(wavPath, mixed, sampleRate, channels);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -461,12 +439,36 @@ public static class VideoEditExporter
         }
     }
 
+    /// <summary>Minimal 44-byte-header PCM16 WAV writer -- ffmpeg reads this as the export's second
+    /// input (alongside the raw video pipe) and does the actual AAC encode + muxing itself.</summary>
+    private static void WritePcm16WavFile(string path, byte[] pcm, int sampleRate, int channels)
+    {
+        int byteRate = sampleRate * channels * 2;
+        short blockAlign = (short)(channels * 2);
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var bw = new BinaryWriter(fs);
+        bw.Write(Encoding.ASCII.GetBytes("RIFF"));
+        bw.Write(36 + pcm.Length);
+        bw.Write(Encoding.ASCII.GetBytes("WAVE"));
+        bw.Write(Encoding.ASCII.GetBytes("fmt "));
+        bw.Write(16); // PCM fmt chunk size
+        bw.Write((short)1); // PCM format tag
+        bw.Write((short)channels);
+        bw.Write(sampleRate);
+        bw.Write(byteRate);
+        bw.Write(blockAlign);
+        bw.Write((short)16); // bits per sample
+        bw.Write(Encoding.ASCII.GetBytes("data"));
+        bw.Write(pcm.Length);
+        bw.Write(pcm);
+    }
+
     /// <summary>Decodes one track's clips into a zero-filled (silence) buffer sized to the FINAL
     /// output length, seeking once per clip and placing each decoded sample at its mapped/speed-
     /// adjusted byte offset. Building each track's full timeline independently like this -- rather
     /// than trying to keep two live decode loops chunk-aligned -- is what lets system and mic (which
     /// may have entirely different clip arrangements after independent editing) still sum together
-    /// correctly: MixPcm16 just adds two same-length buffers.</summary>
+    /// correctly: MixPcm16Into just adds two same-length buffers.</summary>
     private static byte[] DecodeClipsToTimeline(List<PlanClip> clips, double speedFactor, double volume,
         int totalBytes, int bytesPerSecond, int sampleRate, int channels, CancellationToken ct)
     {
@@ -605,32 +607,14 @@ public static class VideoEditExporter
         }
     }
 
-    private static void WriteAudioBytes(IMFSinkWriter writer, int streamIndex, byte[] chunk, long sampleTime, long duration)
-    {
-        if (duration <= 0) return;
-        var buffer = MediaFactory.MFCreateMemoryBuffer(chunk.Length);
-        try
-        {
-            buffer.Lock(out nint ptr, out _, out _);
-            Marshal.Copy(chunk, 0, ptr, chunk.Length);
-            buffer.Unlock();
-            buffer.CurrentLength = chunk.Length;
-
-            using var sample = MediaFactory.MFCreateSample();
-            sample.AddBuffer(buffer);
-            sample.SampleTime = sampleTime;
-            sample.SampleDuration = duration;
-            writer.WriteSample(streamIndex, sample);
-        }
-        finally { buffer.Dispose(); }
-    }
-
-    // ---- probing / sink writer setup ----
+    // ---- probing ----
 
     // EnableVideoProcessing lets the SourceReader insert a color-conversion MFT -- without it,
     // requesting RGB32 output fails outright for an H.264 source (MF_E_INVALIDMEDIATYPE): the
     // H.264 decoder's own native output is NV12, and only the video processor MFT can get from
-    // there to RGB32. Every video-decoding SourceReader in this file needs this.
+    // there to RGB32. Every video-decoding SourceReader in this file needs this. (MF's "Rgb32" is
+    // laid out in memory as BGRA -- matches the "bgra" pixel format ffmpeg is told to expect on its
+    // raw video pipe input, see FfmpegEncodeSession.Start.)
     private static IMFAttributes VideoProcessingReaderAttrs()
     {
         var attrs = MediaFactory.MFCreateAttributes(1);
@@ -654,7 +638,7 @@ public static class VideoEditExporter
             MediaFactory.MFGetAttributeSize(actualAttrs, MediaTypeAttributeKeys.FrameSize, out uint w, out uint h).CheckError();
             MediaFactory.MFGetAttributeRatio(actualAttrs, MediaTypeAttributeKeys.FrameRate, out uint num, out uint den).CheckError();
             int fps = den == 0 ? 30 : (int)Math.Round(num / (double)den);
-            int width = (int)w - (int)w % 2, height = (int)h - (int)h % 2;
+            int width = (int)w - (int)w % 2, height = (int)h - (int)h % 2; // even dimensions -- yuv420p needs it
             return (width, height, Math.Max(1, fps));
         }
         finally { reader.Dispose(); }
@@ -683,89 +667,6 @@ public static class VideoEditExporter
             return null; // no audio stream in this file
         }
         finally { reader?.Dispose(); }
-    }
-
-    private static (IMFSinkWriter writer, int videoStream, int audioStream) CreateSinkWriter(
-        string outputPath, int width, int height, int fps, int? audioSampleRate, int? audioChannels, double qualityMultiplier = 1.0)
-    {
-        // DisableThrottling used to be set here -- it tells the SinkWriter to let WriteSample
-        // return immediately instead of blocking/pacing to match how fast the encoder can actually
-        // drain samples. Our decode loop feeds it frames much faster than realtime, and with nothing
-        // throttling the producer, every WriteSample call's sample+native buffer piles up in the
-        // SinkWriter's own internal queue rather than being freed once written -- invisible to the
-        // managed heap (crash.log confirmed this: 41MB managed heap next to 27GB of process private
-        // bytes at the moment of failure, dead a minute into an 8-minute export). Leaving throttling
-        // at its default (enabled) makes WriteSample block until the encoder has caught up, which
-        // bounds that queue -- slower wall-clock export time, but memory that stays flat instead of
-        // climbing without bound.
-        // ReadwriteEnableHardwareTransforms was briefly forced false (a guess that a broken hardware
-        // encoder explained a report of export crawling for hours), but field data disproved that:
-        // with hardware OFF, a 6-minute export still ran at ~0.8 fps (would take ~3.75 hours) AND
-        // still climbed to 7GB+ private bytes after only 100 frames -- i.e. disabling hardware fixed
-        // neither the slowness nor the memory growth, so it wasn't hardware-vs-software that mattered.
-        // Reverted to letting hardware transforms be used when available (MF falls back to software
-        // automatically if none is registered, so this is never worse than the forced-off state, only
-        // potentially faster).
-        //
-        // LowLatency is new: it tells the encoder to minimize internal frame buffering/lookahead
-        // rather than optimizing purely for compression efficiency. Both the still-slow throughput and
-        // the still-growing memory (present with hardware ON *and* OFF) are consistent with the
-        // encoder holding a growing number of frames internally before it can finalize/emit earlier
-        // ones -- exactly what LowLatency exists to bound, independent of which encoder MFT is chosen.
-        var sinkAttrs = MediaFactory.MFCreateAttributes(2);
-        sinkAttrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, true).CheckError();
-        sinkAttrs.Set(SinkWriterAttributeKeys.LowLatency, true).CheckError();
-        var writer = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs);
-
-        var outType = MediaFactory.MFCreateMediaType();
-        var outAttrs = (IMFAttributes)outType;
-        outAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video).CheckError();
-        outAttrs.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.H264).CheckError();
-        outAttrs.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)(EstimateVideoBitrate(width, height, fps) * qualityMultiplier)).CheckError();
-        outAttrs.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2 /* MFVideoInterlace_Progressive */).CheckError();
-        MediaFactory.MFSetAttributeSize(outAttrs, MediaTypeAttributeKeys.FrameSize, (uint)width, (uint)height).CheckError();
-        MediaFactory.MFSetAttributeRatio(outAttrs, MediaTypeAttributeKeys.FrameRate, (uint)fps, 1).CheckError();
-        MediaFactory.MFSetAttributeRatio(outAttrs, MediaTypeAttributeKeys.PixelAspectRatio, 1, 1).CheckError();
-        int videoStream = writer.AddStream(outType);
-
-        var inType = MediaFactory.MFCreateMediaType();
-        var inAttrs = (IMFAttributes)inType;
-        inAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video).CheckError();
-        inAttrs.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.Rgb32).CheckError();
-        inAttrs.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
-        inAttrs.Set(MediaTypeAttributeKeys.DefaultStride, (uint)(width * 4)).CheckError();
-        MediaFactory.MFSetAttributeSize(inAttrs, MediaTypeAttributeKeys.FrameSize, (uint)width, (uint)height).CheckError();
-        MediaFactory.MFSetAttributeRatio(inAttrs, MediaTypeAttributeKeys.FrameRate, (uint)fps, 1).CheckError();
-        MediaFactory.MFSetAttributeRatio(inAttrs, MediaTypeAttributeKeys.PixelAspectRatio, 1, 1).CheckError();
-        writer.SetInputMediaType(videoStream, inType, null);
-
-        int audioStream = -1;
-        if (audioSampleRate is int sr && audioChannels is int ch)
-        {
-            var audioOutType = MediaFactory.MFCreateMediaType();
-            var audioOutAttrs = (IMFAttributes)audioOutType;
-            audioOutAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio).CheckError();
-            audioOutAttrs.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Aac).CheckError();
-            audioOutAttrs.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, (uint)sr).CheckError();
-            audioOutAttrs.Set(MediaTypeAttributeKeys.AudioNumChannels, (uint)ch).CheckError();
-            audioOutAttrs.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, (uint)(128_000 / 8)).CheckError();
-            audioOutAttrs.Set(MediaTypeAttributeKeys.AudioBitsPerSample, (uint)16).CheckError();
-            audioStream = writer.AddStream(audioOutType);
-
-            var audioInType = MediaFactory.MFCreateMediaType();
-            var audioInAttrs = (IMFAttributes)audioInType;
-            audioInAttrs.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Pcm).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, (uint)sr).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.AudioNumChannels, (uint)ch).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.AudioBitsPerSample, (uint)16).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.AudioBlockAlignment, (uint)(2 * ch)).CheckError();
-            audioInAttrs.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, (uint)(sr * 2 * ch)).CheckError();
-            writer.SetInputMediaType(audioStream, audioInType, null);
-        }
-
-        writer.BeginWriting();
-        return (writer, videoStream, audioStream);
     }
 
     private static int EstimateVideoBitrate(int width, int height, int fps) =>

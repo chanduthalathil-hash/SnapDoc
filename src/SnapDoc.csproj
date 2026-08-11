@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>SnapDoc</AssemblyName>
     <RootNamespace>SnapDoc</RootNamespace>
-    <Version>0.2.24</Version>
+    <Version>0.2.25</Version>
     <LangVersion>latest</LangVersion>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- WPF's SDK normally auto-generates Main() from App.xaml's ApplicationDefinition item and
@@ -29,6 +29,20 @@
     <!-- Also a WPF pack resource (not just the exe's own icon) so Window.Icon (title bar/Alt+Tab)
          and TrayIcon.cs (loaded via pack URI) can both reference the same file. -->
     <Resource Include="Assets\icon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Bundled for VideoEditExporter's encode step; see ThirdParty/ffmpeg/NOTICE.txt for exactly
+         which build/license and why, and FfmpegEncoder for how it's invoked. Copied next to
+         SnapDoc.exe (not embedded) since it's launched as a real child process. -->
+    <None Include="ThirdParty\ffmpeg\ffmpeg.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>ffmpeg.exe</TargetPath>
+    </None>
+    <None Include="ThirdParty\ffmpeg\NOTICE.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>ffmpeg-NOTICE.txt</TargetPath>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
@@ -62,8 +76,11 @@
     <!-- Self-update: checks GitHub Releases and applies new versions in place -->
     <PackageReference Include="Velopack" Version="1.2.0" />
 
-    <!-- Screen recording: H.264/MP4 encode via Media Foundation's SinkWriter (Windows' own
-         built-in encoder, so there's no ffmpeg.exe to bundle and no GPL licensing to think about). -->
+    <!-- Screen RECORDING: H.264/MP4 encode via Media Foundation's SinkWriter (Windows' own
+         built-in encoder). Still used for decoding everywhere, including in the editor's Export;
+         only export's own encode step moved to bundled ffmpeg (see ThirdParty/ffmpeg/NOTICE.txt and
+         VideoEditExporter's class doc for why: a confirmed native leak in exactly this SinkWriter
+         path when re-encoding, not present in live recording's own use of it). -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.8.2" />
 
     <!-- Screen recording: mic + system-audio (WASAPI) capture for the recording toolbar. -->

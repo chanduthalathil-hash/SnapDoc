@@ -1,0 +1,27 @@
+ffmpeg.exe bundled in this directory
+=====================================
+
+Source:  https://github.com/BtbN/FFmpeg-Builds
+Build:   ffmpeg-n7.1-latest-win64-lgpl-7.1.zip (static, win64, LGPL v2.1+)
+Upstream: https://ffmpeg.org
+
+This is the "-lgpl" static build variant, which excludes GPL-only components
+(notably libx264/libx265) so it can be redistributed under LGPL terms without
+extending SnapDoc's own license. H.264 software encoding uses libopenh264
+(Cisco OpenH264, BSD-2-Clause) instead of libx264; hardware encoding uses
+h264_nvenc / h264_qsv / h264_amf when the machine actually has a working
+encoder for one of them (detected at runtime, falls back to libopenh264
+otherwise -- see FfmpegEncoder.DetectBestVideoEncoder).
+
+Used only by VideoEditExporter (the editor's Export button) as the video/
+audio encode step -- see that class's doc comment for why (a confirmed,
+precisely-measured native memory leak in Media Foundation's IMFSinkWriter
+that survived several targeted fixes). Screen *recording* itself
+(MfScreenRecorder) is unaffected and still uses Media Foundation directly,
+unchanged.
+
+To update: download a newer "-lgpl" (not plain, not "-gpl") build from
+https://github.com/BtbN/FFmpeg-Builds/releases, extract bin/ffmpeg.exe, and
+replace this file. Keep using an "-lgpl" variant, not "-gpl" -- the GPL
+variant bundles libx264/libx265 and would require SnapDoc itself to be
+GPL-compatible to redistribute.
