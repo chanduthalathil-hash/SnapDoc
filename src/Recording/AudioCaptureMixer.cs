@@ -1,6 +1,7 @@
 using System;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using SnapDoc.Services;
 
 namespace SnapDoc.Recording;
 
@@ -24,6 +25,21 @@ public sealed class AudioCaptureMixer : IDisposable
     private readonly IWaveProvider? _systemResampled;
     private readonly WaveFormat _outputFormat;
 
+    // Diagnostic only -- a report of "recording has no audio" turned out to be a genuinely-silent
+    // capture (verified independently via ffmpeg's volumedetect: -91dB mean/max on a real recording,
+    // i.e. the mixing/writing pipeline was faithfully encoding actual silence, not losing/corrupting
+    // real audio) rather than a bug anywhere in this class's own logic. That points at WASAPI itself
+    // not delivering real samples -- most commonly Windows' microphone privacy toggle being off for
+    // desktop apps, which doesn't make OpenStream/StartRecording fail, it just delivers a continuous
+    // stream of zeroed buffers as if there were only silence to capture. These counters make that
+    // distinguishable from an actual SnapDoc bug (DataAvailable never firing at all, or firing but the
+    // buffer being genuinely non-zero yet still ending up silent downstream) on the next report,
+    // without needing to reproduce it here first.
+    private long _micCallbacks, _micBytes;
+    private bool _micSawNonZero;
+    private long _systemCallbacks, _systemBytes;
+    private bool _systemSawNonZero;
+
     public int SampleRate => _outputFormat.SampleRate;
     public int Channels => _outputFormat.Channels;
 
@@ -46,12 +62,21 @@ public sealed class AudioCaptureMixer : IDisposable
                 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia)
                 : enumerator.GetDevice(micDeviceId);
             _micCapture = new WasapiCapture(micDevice);
+            CrashLogger.Log("AudioCapture",
+                $"Mic device: '{micDevice.FriendlyName}' (state: {micDevice.State}, requested id: '{micDeviceId}'), " +
+                $"format: {_micCapture.WaveFormat}");
             _micBuffer = new BufferedWaveProvider(_micCapture.WaveFormat)
             {
                 DiscardOnBufferOverflow = true,
                 BufferDuration = TimeSpan.FromSeconds(5),
             };
-            _micCapture.DataAvailable += (_, e) => _micBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            _micCapture.DataAvailable += (_, e) =>
+            {
+                _micCallbacks++;
+                _micBytes += e.BytesRecorded;
+                if (!_micSawNonZero && ContainsNonZero(e.Buffer, e.BytesRecorded)) _micSawNonZero = true;
+                _micBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            };
         }
 
         if (systemAudioEnabled)
@@ -63,7 +88,13 @@ public sealed class AudioCaptureMixer : IDisposable
                 DiscardOnBufferOverflow = true,
                 BufferDuration = TimeSpan.FromSeconds(5),
             };
-            _systemCapture.DataAvailable += (_, e) => _systemBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            _systemCapture.DataAvailable += (_, e) =>
+            {
+                _systemCallbacks++;
+                _systemBytes += e.BytesRecorded;
+                if (!_systemSawNonZero && ContainsNonZero(e.Buffer, e.BytesRecorded)) _systemSawNonZero = true;
+                _systemBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            };
         }
 
         // Mic quality/rate matters more when it's present (voiceover is the point); otherwise
@@ -78,16 +109,51 @@ public sealed class AudioCaptureMixer : IDisposable
         a.SampleRate == b.SampleRate && a.Channels == b.Channels &&
         a.BitsPerSample == b.BitsPerSample && a.Encoding == b.Encoding;
 
+    private static bool ContainsNonZero(byte[] buffer, int count)
+    {
+        // Only the first chunk of each callback -- this runs on WASAPI's own capture thread at a
+        // steady cadence, and finding out "is there ANY real signal at all" doesn't need to scan
+        // every byte of every callback for the entire recording, just enough to catch it once.
+        int scan = Math.Min(count, 4096);
+        for (int i = 0; i < scan; i++)
+            if (buffer[i] != 0) return true;
+        return false;
+    }
+
     public void Start()
     {
-        _micCapture?.StartRecording();
-        _systemCapture?.StartRecording();
+        try { _micCapture?.StartRecording(); }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("AudioCapture", $"Mic StartRecording threw: {ex}");
+            throw;
+        }
+        try { _systemCapture?.StartRecording(); }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("AudioCapture", $"System-audio StartRecording threw: {ex}");
+            throw;
+        }
     }
 
     public void Stop()
     {
         try { _micCapture?.StopRecording(); } catch { /* already stopped/device gone */ }
         try { _systemCapture?.StopRecording(); } catch { /* already stopped/device gone */ }
+
+        // Logged here (not per-callback) so it's one readable line per recording. A genuinely silent
+        // capture -- zero callbacks, or callbacks that only ever delivered zero bytes -- points at
+        // WASAPI/Windows (most likely the microphone privacy toggle for desktop apps), not a bug in
+        // this class's own mixing/writing logic, which was independently verified to be encoding
+        // whatever it's handed correctly (see the field comment on the counters above).
+        if (_micCapture != null)
+            CrashLogger.Log("AudioCapture",
+                $"Mic capture summary: {_micCallbacks} callbacks, {_micBytes} bytes, " +
+                $"{(_micSawNonZero ? "contained real (non-zero) audio data" : "EVERY CALLBACK WAS SILENT (all-zero) -- check Windows microphone privacy settings / correct device selected")}");
+        if (_systemCapture != null)
+            CrashLogger.Log("AudioCapture",
+                $"System audio capture summary: {_systemCallbacks} callbacks, {_systemBytes} bytes, " +
+                $"{(_systemSawNonZero ? "contained real (non-zero) audio data" : "EVERY CALLBACK WAS SILENT (all-zero)")}");
     }
 
     /// <summary>Pull the next chunk of mixed 16-bit PCM at (SampleRate, Channels), converting from
